@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auto Test Dashboard</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:       #0f172a;
+  --surface:  #1e293b;
+  --surface2: #263248;
+  --border:   #334155;
+  --text:     #e2e8f0;
+  --muted:    #94a3b8;
+  --blue:     #3b82f6;
+  --blue-dim: #1d4ed8;
+  --green:    #22c55e;
+  --red:      #ef4444;
+  --orange:   #f97316;
+  --yellow:   #eab308;
+  --radius:   8px;
+}
+
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+       background: var(--bg); color: var(--text); min-height: 100vh; }
+
+/* ── Layout ──────────────────────────────────────────────────────────────── */
+header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 24px; height: 56px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 100;
+}
+header h1 { font-size: 16px; font-weight: 600; white-space: nowrap; }
+header .badge { font-size: 11px; background: var(--blue); color: #fff;
+                padding: 2px 8px; border-radius: 999px; }
+nav { display: flex; gap: 4px; margin-left: 24px; }
+nav button {
+  padding: 6px 16px; border-radius: var(--radius); border: none; cursor: pointer;
+  font-size: 14px; font-weight: 500; background: transparent; color: var(--muted);
+  transition: .15s;
+}
+nav button:hover  { background: var(--surface2); color: var(--text); }
+nav button.active { background: var(--blue); color: #fff; }
+
+main { max-width: 1140px; margin: 0 auto; padding: 28px 24px; }
+
+/* ── Tabs ─────────────────────────────────────────────────────────────────── */
+.tab { display: none; }
+.tab.active { display: block; }
+
+/* ── Section header ───────────────────────────────────────────────────────── */
+.section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.section-header h2 { font-size: 18px; font-weight: 600; }
+.section-header p  { font-size: 13px; color: var(--muted); margin-top: 2px; }
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 16px; border-radius: var(--radius); border: none; cursor: pointer;
+  font-size: 13px; font-weight: 500; transition: .15s; text-decoration: none;
+}
+.btn-primary { background: var(--blue); color: #fff; }
+.btn-primary:hover { background: var(--blue-dim); }
+.btn-danger  { background: var(--red); color: #fff; }
+.btn-danger:hover  { opacity: .85; }
+.btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+.btn-ghost:hover { background: var(--surface2); color: var(--text); }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ── Card ─────────────────────────────────────────────────────────────────── */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+
+/* ── Drop Zone ────────────────────────────────────────────────────────────── */
+#drop-zone {
+  border: 2px dashed var(--border); border-radius: var(--radius);
+  padding: 36px; text-align: center; cursor: pointer; transition: .15s; margin-bottom: 20px;
+}
+#drop-zone:hover, #drop-zone.drag-over { border-color: var(--blue); background: rgba(59,130,246,.06); }
+#drop-zone .icon { font-size: 32px; margin-bottom: 8px; }
+#drop-zone p { color: var(--muted); font-size: 13px; }
+#drop-zone strong { color: var(--text); }
+#file-input { display: none; }
+#upload-progress { display: none; }
+#upload-progress .bar-wrap { height: 4px; background: var(--border); border-radius: 999px; margin-top: 10px; overflow: hidden; }
+#upload-progress .bar { height: 100%; background: var(--blue); width: 0; transition: width .3s; }
+
+/* ── Table ────────────────────────────────────────────────────────────────── */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+thead th {
+  text-align: left; padding: 8px 12px; color: var(--muted);
+  border-bottom: 1px solid var(--border); font-weight: 500; font-size: 12px;
+  text-transform: uppercase; letter-spacing: .04em;
+}
+tbody tr { border-bottom: 1px solid var(--border); transition: .1s; }
+tbody tr:last-child { border-bottom: none; }
+tbody tr:hover { background: var(--surface2); }
+tbody td { padding: 10px 12px; vertical-align: middle; }
+.mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
+.chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.chip-blue  { background: rgba(59,130,246,.15); color: #60a5fa; }
+.chip-green { background: rgba(34,197,94,.15);  color: #4ade80; }
+.chip-red   { background: rgba(239,68,68,.15);  color: #f87171; }
+.chip-muted { background: rgba(148,163,184,.1); color: var(--muted); }
+
+/* ── Run tab ──────────────────────────────────────────────────────────────── */
+.run-grid { display: grid; grid-template-columns: 360px 1fr; gap: 20px; align-items: start; }
+@media (max-width: 800px) { .run-grid { grid-template-columns: 1fr; } }
+
+.form-group { margin-bottom: 16px; }
+.form-label {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 500;
+}
+.form-group select {
+  width: 100%; background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px 10px; font-size: 13px; appearance: none;
+}
+.form-group select:focus { outline: none; border-color: var(--blue); }
+select option { background: var(--surface); }
+
+/* ── Checkbox list (APK + TC) ────────────────────────────────────────────── */
+.check-list {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  max-height: 180px; overflow-y: auto;
+}
+.check-list-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-bottom: 1px solid var(--border);
+  cursor: pointer; transition: .1s;
+}
+.check-list-item:last-child { border-bottom: none; }
+.check-list-item:hover { background: var(--surface2); }
+.check-list-item input[type=checkbox] { accent-color: var(--blue); width: 14px; height: 14px; flex-shrink: 0; }
+.check-list-item div { font-size: 13px; flex: 1; }
+.check-list-item .sub  { font-size: 11px; color: var(--muted); }
+
+/* ── TC list ─────────────────────────────────────────────────────────────── */
+.tc-list {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  max-height: 240px; overflow-y: auto;
+}
+.tc-file-header {
+  padding: 6px 12px; background: var(--surface2);
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em;
+  border-bottom: 1px solid var(--border); position: sticky; top: 0;
+}
+.tc-list-item {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 9px 12px 9px 20px; border-bottom: 1px solid var(--border);
+  cursor: pointer; transition: .1s;
+}
+.tc-list-item:last-child { border-bottom: none; }
+.tc-list-item:hover { background: var(--surface2); }
+.tc-list-item input[type=checkbox] { accent-color: var(--blue); width: 14px; height: 14px; flex-shrink: 0; margin-top: 1px; }
+.tc-list-item div { flex: 1; }
+.tc-list-item .cls-name  { font-size: 13px; font-weight: 500; }
+.tc-list-item .cls-count { font-size: 11px; color: var(--muted); margin-top: 1px; }
+
+/* ── Selectors row ───────────────────────────────────────────────────────── */
+.sel-row { display: flex; gap: 6px; }
+.sel-row button {
+  font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border);
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.sel-row button:hover { background: var(--surface2); color: var(--text); }
+
+/* ── Console ──────────────────────────────────────────────────────────────── */
+#console-wrap {
+  background: #020617; border: 1px solid var(--border); border-radius: var(--radius);
+  overflow: hidden; display: flex; flex-direction: column;
+}
+.console-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 14px; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.console-header span { font-size: 12px; color: var(--muted); }
+#console {
+  flex: 1; overflow-y: auto; padding: 12px 14px;
+  font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+  font-size: 12px; line-height: 1.6; min-height: 420px; max-height: 580px;
+}
+.log-line  { color: #94a3b8; white-space: pre-wrap; word-break: break-all; }
+.log-pass  { color: #4ade80; }
+.log-fail  { color: #f87171; }
+.log-error { color: #fb923c; }
+.log-info  { color: #60a5fa; }
+.log-warn  { color: #fbbf24; }
+.log-cmd   { color: #a78bfa; }
+.log-sep   { color: #334155; }
+
+#run-status {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px; background: var(--surface);
+  border-top: 1px solid var(--border); font-size: 12px;
+}
+@keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.3;} }
+
+/* ── Reports ──────────────────────────────────────────────────────────────── */
+#report-iframe {
+  /* Full-bleed: break out of main's max-width constraint */
+  display: block;
+  width: 100vw;
+  position: relative;
+  left: 50%;
+  margin-left: -50vw;
+  height: calc(100vh - 130px);
+  border: none;
+  border-top: 1px solid var(--border);
+  background: #fff;
+}
+
+/* ── Toast ────────────────────────────────────────────────────────────────── */
+#toast-wrap { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 8px; z-index: 999; }
+.toast {
+  padding: 10px 16px; border-radius: var(--radius); font-size: 13px;
+  animation: slide-in .2s; max-width: 340px; border-left: 3px solid;
+}
+.toast-ok   { background: #052e16; color: #86efac; border-color: var(--green); }
+.toast-err  { background: #450a0a; color: #fca5a5; border-color: var(--red); }
+.toast-info { background: #172554; color: #93c5fd; border-color: var(--blue); }
+@keyframes slide-in { from{transform:translateX(40px);opacity:0;} to{transform:none;opacity:1;} }
+
+/* ── Misc ─────────────────────────────────────────────────────────────────── */
+.empty { text-align: center; padding: 48px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Auto Test Dashboard</h1>
+  <span class="badge">PDF Reader</span>
+  <nav>
+    <button class="active" onclick="switchTab('apks',this)">APKs</button>
+    <button onclick="switchTab('run',this)">Run Tests</button>
+    <button onclick="switchTab('reports',this)">Reports</button>
+  </nav>
+</header>
+
+<main>
+
+  <!-- ════════════════════ TAB: APKs ════════════════════════════════════ -->
+  <div id="tab-apks" class="tab active">
+    <div class="section-header">
+      <div><h2>Quản lý APK</h2><p>Upload APK để cài lên device trước khi chạy test</p></div>
+      <button class="btn btn-ghost" onclick="loadApks()">↻ Refresh</button>
+    </div>
+
+    <div id="drop-zone" onclick="document.getElementById('file-input').click()">
+      <div class="icon">📦</div>
+      <p><strong>Kéo thả file APK vào đây</strong> hoặc click để chọn file</p>
+      <p style="margin-top:6px;font-size:12px;">Hỗ trợ file .apk</p>
+      <div id="upload-progress">
+        <p id="upload-name" style="margin-top:8px;color:var(--text);font-size:13px;"></p>
+        <div class="bar-wrap"><div class="bar" id="upload-bar"></div></div>
+      </div>
+    </div>
+    <input type="file" id="file-input" accept=".apk" onchange="uploadApk(this.files[0])">
+
+    <div class="card" style="padding:0;overflow:hidden;">
+      <table>
+        <thead><tr>
+          <th>Tên file</th><th>Version</th><th>Version Code</th>
+          <th>Size</th><th>Ngày sửa</th><th></th>
+        </tr></thead>
+        <tbody id="apk-tbody">
+          <tr><td colspan="6" class="empty">Đang tải...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ════════════════════ TAB: RUN ══════════════════════════════════════ -->
+  <div id="tab-run" class="tab">
+    <div class="section-header">
+      <div><h2>Chạy Test</h2><p>Chọn device, test cases và bấm Start</p></div>
+    </div>
+
+    <div class="run-grid">
+      <!-- Left: config -->
+      <div>
+        <div class="card">
+
+          <!-- Device -->
+          <div class="form-group">
+            <div class="form-label">
+              <span>Device</span>
+              <button class="btn btn-ghost" style="padding:2px 8px;font-size:11px;" onclick="loadDevices()">↻</button>
+            </div>
+            <select id="device-select">
+              <option value="">-- Đang tải... --</option>
+            </select>
+          </div>
+
+          <!-- APK install -->
+          <div class="form-group">
+            <div class="form-label">
+              <span>Cài APK trước khi test <span style="font-weight:400;color:var(--muted)">(tùy chọn)</span></span>
+              <div class="sel-row">
+                <button onclick="setAllApks(true)">Tất cả</button>
+                <button onclick="setAllApks(false)">Bỏ chọn</button>
+              </div>
+            </div>
+            <div class="check-list" id="apk-install-list">
+              <div style="padding:10px 12px;color:var(--muted);font-size:13px;">Đang tải...</div>
+            </div>
+          </div>
+
+          <!-- Test cases -->
+          <div class="form-group">
+            <div class="form-label">
+              <span>Test Cases <span id="tc-count" style="font-weight:400;color:var(--muted)"></span></span>
+              <div class="sel-row">
+                <button onclick="setAllTc(true)">Tất cả</button>
+                <button onclick="setAllTc(false)">Bỏ chọn</button>
+              </div>
+            </div>
+            <div class="tc-list" id="tc-list">
+              <div style="padding:20px;text-align:center;color:var(--muted);font-size:13px;">Đang tải...</div>
+            </div>
+          </div>
+
+          <!-- Actions -->
+          <div style="display:flex;gap:8px;margin-top:4px;">
+            <button class="btn btn-primary" id="btn-start" onclick="startRun()" style="flex:1;">▶ Start Test</button>
+            <button class="btn btn-danger"  id="btn-stop"  onclick="stopRun()" disabled>■ Stop</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: console -->
+      <div id="console-wrap">
+        <div class="console-header">
+          <span>Console Output</span>
+          <button class="btn btn-ghost" style="padding:3px 10px;font-size:11px;" onclick="clearConsole()">Clear</button>
+        </div>
+        <div id="console">
+          <div class="log-line" style="color:#334155;">// Console output sẽ hiển thị ở đây khi chạy test</div>
+        </div>
+        <div id="run-status">
+          <span id="status-dot" style="width:8px;height:8px;border-radius:50%;background:var(--border);display:inline-block;flex-shrink:0;"></span>
+          <span id="status-text" style="color:var(--muted);">Sẵn sàng</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════ TAB: REPORTS ══════════════════════════════════ -->
+  <div id="tab-reports" class="tab">
+    <div class="section-header">
+      <div><h2>Dashboard</h2><p id="report-meta" style="color:var(--muted);">Đang tải...</p></div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-ghost" onclick="loadReports()">↻ Refresh</button>
+        <a id="report-open-link" href="#" target="_blank" class="btn btn-ghost" style="display:none;">↗ Mở tab mới</a>
+      </div>
+    </div>
+    <iframe id="report-iframe" src="about:blank"></iframe>
+  </div>
+
+</main>
+
+<div id="toast-wrap"></div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let _scripts = [];
+let _apks    = [];
+let _sse     = null;
+let _running = false;
+
+// ── Tab switching ──────────────────────────────────────────────────────────────
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  if (btn) btn.classList.add('active');
+  if (name === 'apks')    loadApks();
+  if (name === 'run')     { loadDevices(); loadScripts(); loadApkInstallList(); }
+  if (name === 'reports') loadReports();
+}
+
+// ── APK Tab ────────────────────────────────────────────────────────────────────
+async function loadApks() {
+  const tbody = document.getElementById('apk-tbody');
+  tbody.innerHTML = '<tr><td colspan="6" class="empty">Đang tải...</td></tr>';
+  try {
+    const r = await fetch('/api/apks');
+    _apks = await r.json();
+    renderApkTable(_apks);
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty" style="color:var(--red);">Lỗi: ${e.message}</td></tr>`;
+  }
+}
+
+function renderApkTable(apks) {
+  const tbody = document.getElementById('apk-tbody');
+  if (!apks.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">Chưa có APK nào. Upload APK ở trên.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = apks.map(a => `
+    <tr>
+      <td><span class="mono">${a.filename}</span></td>
+      <td><span class="chip chip-blue">${a.version_name}</span></td>
+      <td><span class="mono" style="color:var(--muted);">${a.version_code}</span></td>
+      <td style="color:var(--muted);">${a.size_mb} MB</td>
+      <td style="color:var(--muted);">${a.modified}</td>
+      <td>
+        <button class="btn btn-ghost" style="padding:4px 10px;font-size:13px;color:var(--red);border-color:transparent;"
+                onclick="deleteApk('${a.filename}')">🗑</button>
+      </td>
+    </tr>`).join('');
+}
+
+async function deleteApk(filename) {
+  if (!confirm(`Xóa ${filename}?`)) return;
+  const r = await fetch('/api/apks/' + encodeURIComponent(filename), { method: 'DELETE' });
+  const d = await r.json();
+  if (d.ok) { toast('Đã xóa ' + filename, 'ok'); loadApks(); loadApkInstallList(); }
+  else toast(d.error || 'Lỗi khi xóa', 'err');
+}
+
+// Upload drag & drop
+const dz = document.getElementById('drop-zone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e => {
+  e.preventDefault(); dz.classList.remove('drag-over');
+  [...e.dataTransfer.files].forEach(f => uploadApk(f));
+});
+
+async function uploadApk(file) {
+  if (!file || !file.name.endsWith('.apk')) { toast('File phải có đuôi .apk', 'err'); return; }
+  const prog = document.getElementById('upload-progress');
+  const bar  = document.getElementById('upload-bar');
+  const name = document.getElementById('upload-name');
+  prog.style.display = 'block';
+  name.textContent   = 'Đang upload: ' + file.name;
+  bar.style.width    = '30%';
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const r = await fetch('/api/apks/upload', { method: 'POST', body: fd });
+    bar.style.width = '100%';
+    const d = await r.json();
+    if (d.ok) { toast(`Upload OK: ${d.filename} (v${d.version_name})`, 'ok'); loadApks(); loadApkInstallList(); }
+    else toast(d.error || 'Upload thất bại', 'err');
+  } catch(e) {
+    toast('Lỗi upload: ' + e.message, 'err');
+  } finally {
+    setTimeout(() => { prog.style.display = 'none'; bar.style.width = '0%'; }, 1500);
+  }
+}
+
+// ── Run Tab ────────────────────────────────────────────────────────────────────
+async function loadDevices() {
+  const sel = document.getElementById('device-select');
+  sel.innerHTML = '<option value="">-- Đang tải... --</option>';
+  try {
+    const r  = await fetch('/api/devices');
+    const ds = await r.json();
+    if (ds.error) { sel.innerHTML = `<option value="">Lỗi: ${ds.error}</option>`; return; }
+    if (!ds.length) { sel.innerHTML = '<option value="">-- Không có device --</option>'; return; }
+    sel.innerHTML = ds.map(d => `<option value="${d.serial}">${d.model} [${d.serial}] Android ${d.android}</option>`).join('');
+  } catch(e) {
+    sel.innerHTML = `<option value="">Lỗi: ${e.message}</option>`;
+  }
+}
+
+// APK install list (checkboxes)
+async function loadApkInstallList() {
+  const list = document.getElementById('apk-install-list');
+  try {
+    const r = await fetch('/api/apks');
+    _apks = await r.json();
+    if (!_apks.length) {
+      list.innerHTML = '<div style="padding:10px 12px;color:var(--muted);font-size:13px;">Chưa có APK</div>';
+      return;
+    }
+    list.innerHTML = _apks.map(a => `
+      <label class="check-list-item">
+        <input type="checkbox" class="apk-cb" value="${a.filename}">
+        <div>
+          <div>${a.filename}</div>
+          <div class="sub">v${a.version_name} &nbsp;·&nbsp; ${a.size_mb} MB</div>
+        </div>
+      </label>`).join('');
+  } catch(e) {
+    list.innerHTML = `<div style="padding:10px 12px;color:var(--red);font-size:13px;">Lỗi: ${e.message}</div>`;
+  }
+}
+
+function setAllApks(checked) {
+  document.querySelectorAll('.apk-cb').forEach(cb => cb.checked = checked);
+}
+
+// Test cases list (per class)
+async function loadScripts() {
+  const list = document.getElementById('tc-list');
+  list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px;">Đang tải...</div>';
+  try {
+    const r = await fetch('/api/test-scripts');
+    _scripts = await r.json();
+    renderTcList(_scripts);
+  } catch(e) {
+    list.innerHTML = `<div style="padding:20px;text-align:center;color:var(--red);font-size:13px;">Lỗi: ${e.message}</div>`;
+  }
+}
+
+function renderTcList(scripts) {
+  const list = document.getElementById('tc-list');
+  const cnt  = document.getElementById('tc-count');
+
+  if (!scripts.length) {
+    list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px;">Không tìm thấy test case nào</div>';
+    cnt.textContent = '';
+    return;
+  }
+
+  let total = 0;
+  let html  = '';
+
+  scripts.forEach(s => {
+    if (!s.cases.length) return;
+    html += `<div class="tc-file-header">${s.filename}</div>`;
+    s.cases.forEach(c => {
+      total += c.methods.length;
+      const val    = `${s.filename}::${c.cls}`;
+      const detail = c.methods.map(m => m.replace('test_', '')).join(', ');
+      html += `
+        <label class="tc-list-item">
+          <input type="checkbox" class="tc-cb" value="${val}" checked>
+          <div>
+            <div class="cls-name">${c.cls}</div>
+            <div class="cls-count">${c.methods.length} test${c.methods.length>1?'s':''} · ${detail}</div>
+          </div>
+        </label>`;
+    });
+  });
+
+  list.innerHTML = html;
+  cnt.textContent = `(${total} tests)`;
+}
+
+function setAllTc(checked) {
+  document.querySelectorAll('.tc-cb').forEach(cb => cb.checked = checked);
+}
+
+// Start / Stop
+async function startRun() {
+  const device      = document.getElementById('device-select').value;
+  const checkedTc   = [...document.querySelectorAll('.tc-cb:checked')].map(c => c.value);
+  const checkedApks = [...document.querySelectorAll('.apk-cb:checked')].map(c => c.value);
+
+  if (!device)         { toast('Chọn device trước', 'err');               return; }
+  if (!checkedTc.length) { toast('Chọn ít nhất 1 test case', 'err');     return; }
+
+  if (_sse) { _sse.close(); _sse = null; }
+  clearConsole();
+
+  const r = await fetch('/api/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device, scripts: checkedTc, install_apks: checkedApks }),
+  });
+  const d = await r.json();
+  if (!d.ok) { toast(d.error || 'Không thể bắt đầu', 'err'); return; }
+
+  setRunning(true);
+
+  _sse = new EventSource('/api/run/stream');
+  _sse.onmessage = e => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'ping') return;
+    if (msg.type === 'log')  appendLog(msg.text);
+    if (msg.type === 'done') {
+      setRunning(false);
+      _sse.close(); _sse = null;
+      const ok = msg.code === 0;
+      toast(ok ? '✓ Test hoàn thành' : `✗ Test kết thúc (code ${msg.code})`, ok ? 'ok' : 'err');
+      document.getElementById('status-text').textContent = ok ? '✓ Hoàn thành' : '✗ Kết thúc lỗi';
+      document.getElementById('status-text').style.color = ok ? 'var(--green)' : 'var(--red)';
+    }
+  };
+  _sse.onerror = () => { if (_running) { setRunning(false); appendLog('[SSE disconnected]'); } };
+}
+
+async function stopRun() {
+  await fetch('/api/run/stop', { method: 'POST' });
+  toast('Đã gửi lệnh dừng', 'info');
+}
+
+function setRunning(yes) {
+  _running = yes;
+  document.getElementById('btn-start').disabled = yes;
+  document.getElementById('btn-stop').disabled  = !yes;
+  const dot  = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  if (yes) {
+    dot.style.cssText  = 'width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block;flex-shrink:0;animation:pulse 1s infinite;';
+    text.textContent   = 'Đang chạy...';
+    text.style.color   = 'var(--green)';
+  } else {
+    dot.style.cssText  = 'width:8px;height:8px;border-radius:50%;background:var(--border);display:inline-block;flex-shrink:0;';
+    text.style.color   = 'var(--muted)';
+  }
+}
+
+function appendLog(line) {
+  const con = document.getElementById('console');
+  const el  = document.createElement('div');
+  const low = line.toLowerCase();
+  let cls = 'log-line';
+  if (/\bpassed\b/.test(low))                              cls += ' log-pass';
+  else if (/\bfailed\b/.test(low))                         cls += ' log-fail';
+  else if (/\berror\b/.test(low) && !/={3}/.test(line))    cls += ' log-error';
+  else if (low.startsWith('[cmd]') || low.startsWith('[install]')) cls += ' log-cmd';
+  else if (/^={3}|^-{3}/.test(line))                       cls += ' log-sep';
+  else if (/warning|warn/.test(low))                       cls += ' log-warn';
+  else if (/^collect|^\[/.test(low))                       cls += ' log-info';
+  el.className = cls;
+  el.textContent = line;
+  con.appendChild(el);
+  con.scrollTop  = con.scrollHeight;
+}
+
+function clearConsole() {
+  document.getElementById('console').innerHTML = '';
+}
+
+// ── Reports Tab ────────────────────────────────────────────────────────────────
+async function loadReports() {
+  const meta   = document.getElementById('report-meta');
+  const iframe = document.getElementById('report-iframe');
+  const link   = document.getElementById('report-open-link');
+  meta.textContent = 'Đang tải...';
+  try {
+    const r  = await fetch('/api/reports');
+    const rs = await r.json();
+    if (!rs.length) {
+      meta.textContent = 'Chưa có report nào';
+      return;
+    }
+    const latest = rs[0]; // đã sort mới nhất lên đầu
+    const ts     = latest.ts || '';
+    const date   = ts.length >= 8 ? `${ts.slice(0,4)}-${ts.slice(4,6)}-${ts.slice(6,8)}` : ts;
+    const time   = ts.length >= 15 ? `${ts.slice(9,11)}:${ts.slice(11,13)}:${ts.slice(13,15)}` : '';
+    const url    = `/reports/${latest.filename}`;
+    meta.textContent    = `Lần chạy gần nhất: ${date} ${time}`;
+    iframe.src          = url;
+    link.href           = url;
+    link.style.display  = 'inline-flex';
+  } catch(e) {
+    meta.textContent = `Lỗi: ${e.message}`;
+    meta.style.color = 'var(--red)';
+  }
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────────
+function toast(msg, type = 'info') {
+  const wrap = document.getElementById('toast-wrap');
+  const el   = document.createElement('div');
+  el.className = 'toast toast-' + type;
+  el.textContent = msg;
+  wrap.appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+loadApks();
+</script>
+</body>
+</html>

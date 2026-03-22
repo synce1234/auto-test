@@ -1,0 +1,20 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Generated reports (large, auto-generated)
+reports/
+
+# APKs (binary, managed separately)
+apks/*.apk
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
