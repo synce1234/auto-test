@@ -195,16 +195,6 @@ Tổng hợp kết quả
 
 ---
 
-## Phân công trách nhiệm
-
-| Vai trò | Trách nhiệm |
-|---------|-------------|
-| QA (Auto) | Chạy auto test, đọc report, triage lỗi, cập nhật test case mới |
-| QA (Manual) | Chạy manual checklist, verify bug sau khi dev fix |
-| Dev | Fix bug được báo, confirm fix scope |
-
----
-
 ## Cập nhật test case mới
 
 Khi tìm thấy bug mới hoặc có tính năng mới:

@@ -7,6 +7,7 @@ import re
 import sys
 import base64
 import time
+import subprocess
 import pytest
 import yaml
 from datetime import datetime
@@ -56,9 +57,48 @@ def adb():
     return ADBController(serial)
 
 
+def _wait_for_device(serial: str = "", timeout: int = 60) -> bool:
+    """Chờ ADB device online và authorized."""
+    adb_prefix = ["adb", "-s", serial] if serial else ["adb"]
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        result = subprocess.run(
+            adb_prefix + ["shell", "echo", "ok"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0 and "ok" in result.stdout:
+            return True
+        time.sleep(2)
+    return False
+
+
+def _restart_appium(port: int, serial: str = ""):
+    """Restart Appium server, chờ device authorized và Appium sẵn sàng."""
+    subprocess.run(["pkill", "-f", "node.*appium"], capture_output=True)
+    time.sleep(3)
+    subprocess.Popen(
+        ["appium", "--port", str(port)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    # Chờ device authorized trước
+    _wait_for_device(serial)
+    # Chờ Appium sẵn sàng
+    import urllib.request
+    for _ in range(20):
+        time.sleep(2)
+        try:
+            with urllib.request.urlopen(f"http://localhost:{port}/status", timeout=2) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            pass
+    return False
+
+
 @pytest.fixture(scope="session")
 def driver():
-    """Tạo Appium driver 1 lần cho cả session test."""
+    """Tạo Appium driver 1 lần cho cả session test. Tự restart Appium nếu gặp Settings timeout."""
     global _session_driver
     options = UiAutomator2Options()
     options.platform_name          = "Android"
@@ -78,7 +118,18 @@ def driver():
     host = CFG["appium"]["host"]
     port = CFG["appium"]["port"]
 
-    drv = webdriver.Remote(f"http://{host}:{port}", options=options)
+    drv = None
+    for attempt in range(3):
+        try:
+            drv = webdriver.Remote(f"http://{host}:{port}", options=options)
+            break
+        except Exception as e:
+            if "Appium Settings app is not running" in str(e) and attempt < 2:
+                print(f"\n  [APPIUM] Settings timeout, restarting Appium (attempt {attempt + 1})...")
+                _restart_appium(port, serial)
+            else:
+                raise
+
     drv.implicitly_wait(CFG["device"]["ui_timeout"])
 
     # Lưu reference sớm để pytest_runtest_protocol có thể dùng
@@ -198,6 +249,54 @@ def pytest_runtest_protocol(item, nextitem):
     need_confirm = item.get_closest_marker("need_confirm") is not None
     if _session_driver and (_video_enabled() or need_confirm):
         _do_start_recording(_session_driver)
+    yield
+
+
+def _is_uia2_crash(e: Exception) -> bool:
+    """Kiểm tra exception có phải do UiAutomator2 instrumentation crash không."""
+    return "instrumentation process is not running" in str(e)
+
+
+def _adb_recover_home(serial: str = ""):
+    """
+    Dùng ADB thuần (bypass UiAutomator2) để về Home screen.
+    Gọi khi UiAutomator2 bị crash và Appium command không dùng được.
+    """
+    adb_prefix = ["adb", "-s", serial] if serial else ["adb"]
+    # Force-stop UiAutomator2 server để Appium restart lại khi cần
+    for pkg in ["io.appium.uiautomator2.server", "io.appium.uiautomator2.server.test"]:
+        subprocess.run(adb_prefix + ["shell", "am", "force-stop", pkg],
+                       capture_output=True)
+    # Dùng ADB input để press Home (không cần UiAutomator2)
+    subprocess.run(adb_prefix + ["shell", "input", "keyevent", "3"],
+                   capture_output=True)
+    time.sleep(3)  # Chờ UiAutomator2 restart tự động
+
+
+@pytest.fixture(autouse=True)
+def setup_before_test(driver):
+    """Kill app PDF và về home screen trước mỗi test."""
+    serial = os.environ.get("TEST_DEVICE_SERIAL", "")
+    # Chờ device sẵn sàng (phòng trường hợp emulator đang authorize sau reboot)
+    _wait_for_device(serial, timeout=30)
+    pkg = CFG["app"]["package_name"]
+    try:
+        driver.terminate_app(pkg)
+    except Exception:
+        # Fallback: dùng ADB force-stop khi Appium không dùng được
+        subprocess.run((["adb", "-s", serial] if serial else ["adb"]) +
+                       ["shell", "am", "force-stop", pkg], capture_output=True)
+    try:
+        driver.press_keycode(3)  # KEYCODE_HOME
+    except Exception as e:
+        if _is_uia2_crash(e):
+            print(f"\n  [UIA2 CRASH] UiAutomator2 crashed, recovering via ADB...")
+            _adb_recover_home(serial)
+        else:
+            # Fallback ADB cho mọi lỗi khác
+            subprocess.run((["adb", "-s", serial] if serial else ["adb"]) +
+                           ["shell", "input", "keyevent", "3"], capture_output=True)
+    time.sleep(1)
     yield
 
 

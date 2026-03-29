@@ -246,6 +246,24 @@ def click_notification_row(driver, adb=None):
     return False
 
 
+def handle_open_with_chooser(driver, pkg_label: str = "All Docs PDF Reader") -> bool:
+    """
+    Xử lý dialog 'Open with...' sau khi mở file từ intent.
+    Click 'Just once' để mở file bằng app chỉ định.
+    Trả về True nếu đã handle được.
+    """
+    try:
+        just_once = WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((AppiumBy.XPATH, '//*[@text="Just once"]'))
+        )
+        just_once.click()
+        time.sleep(2)
+        return True
+    except (TimeoutException, NoSuchElementException):
+        pass
+    return False
+
+
 def force_exit_notification(adb, pkg, alarm_type: int = 10342):
     """
     Buộc app gửi exit notification ngay lập tức qua ADB broadcast.
@@ -709,14 +727,37 @@ class TestNotification:
         pkg = cfg["app"]["package_name"]
         go_to_home(driver, cfg)
 
-        # Mở file đầu tiên từ danh sách (nếu có)
+        # Tìm file không phải Welcome để mở
         items = find_all(driver, "vl_item_file_name", timeout=10)
-        if not items:
-            pytest.skip("Không có file nào để test TC-006")
+        target = next((el for el in items if "welcome" not in el.text.lower()), None)
 
-        file_name = items[0].text
-        items[0].click()
+        # Nếu không có file phù hợp → push file test vào app
+        if target is None:
+            test_pdf_local = os.path.join(
+                os.path.dirname(__file__), "../../tests/resources/sample_simple.pdf"
+            )
+            remote_path = "/sdcard/Download/sample_simple.pdf"
+            adb.push_file(test_pdf_local, remote_path)
+            time.sleep(3)
+            go_to_home(driver, cfg)
+            items = find_all(driver, "vl_item_file_name", timeout=10)
+            target = next((el for el in items if "welcome" not in el.text.lower()), None)
+
+        if target is None:
+            pytest.skip("Không có file nào (ngoài Welcome) để test TC-006")
+
+        file_name = target.text
+        target.click()
         time.sleep(3)
+
+        # Dismiss ad nếu có
+        try:
+            from tests.helpers import dismiss_ads, _is_ad_showing
+            if _is_ad_showing(driver):
+                dismiss_ads(driver)
+                time.sleep(1)
+        except Exception:
+            pass
 
         # Đọc một chút (không 100%) rồi close file
         if is_visible(driver, "imv_toolbar_back", timeout=8):
@@ -758,11 +799,13 @@ class TestNotification:
         """
         TC-007: Có file in-progress <100%, opened từ app khác, close app
         Expected: Noti silent với 'Complete Reading Now'
-        Note: Test này simulate bằng cách push file PDF lên device rồi mở từ file manager
+        Luồng:
+        1. Mở file từ app khác (dismiss ads nếu có)
+        2. Đọc file dưới 100%, thực hiện close file
+        3. Close app hoặc chuyển app sang background
         """
         pkg = cfg["app"]["package_name"]
 
-        # Push một file PDF test lên storage
         test_pdf_local = os.path.join(
             os.path.dirname(__file__), "../../tests/resources/sample_simple.pdf"
         )
@@ -773,25 +816,35 @@ class TestNotification:
         adb.push_file(test_pdf_local, remote_path)
         time.sleep(1)
 
-        # Mở file từ Files app (simulate "từ app khác")
+        # 1. Mở file từ intent (simulate app khác)
         adb._run([
             "shell", "am", "start",
             "-a", "android.intent.action.VIEW",
             "-t", "application/pdf",
             "-d", f"file://{remote_path}",
         ])
-        time.sleep(5)
+        time.sleep(3)
 
-        # Kiểm tra PDF reader đã mở
-        if not is_visible(driver, "textView_title", timeout=10):
-            # App có thể đã mở qua intent, thử activate
-            try:
-                driver.activate_app(pkg)
-                time.sleep(3)
-            except Exception:
-                pass
+        # Xử lý dialog "Open with..." nếu có
+        handle_open_with_chooser(driver)
+        time.sleep(3)
 
-        # Close file (back)
+        # Dismiss ads nếu có (chỉ dùng XPATH, không dùng fallback tap)
+        from tests.helpers import _is_ad_showing, dismiss_ads
+        for _ in range(3):
+            if is_visible(driver, "doc_view", timeout=3) or is_visible(driver, "imv_toolbar_back", timeout=2):
+                break
+            if _is_ad_showing(driver):
+                dismiss_ads(driver)
+                time.sleep(2)
+
+        # 2. Đọc file một chút (<100%) rồi close file
+        if is_visible(driver, "doc_view", timeout=8):
+            size = driver.get_window_size()
+            w, h = size["width"], size["height"]
+            driver.swipe(w // 2, int(h * 0.7), w // 2, int(h * 0.3), 400)
+            time.sleep(1)
+
         if is_visible(driver, "imv_toolbar_back", timeout=5):
             find(driver, "imv_toolbar_back").click()
             time.sleep(2)
@@ -799,7 +852,7 @@ class TestNotification:
         # Xóa notifications cũ
         clear_all_notifications(driver)
 
-        # Background app
+        # 4. Chuyển app sang background
         background_app(driver)
         time.sleep(3)
 
@@ -808,14 +861,12 @@ class TestNotification:
         if not noti_found:
             noti_found = wait_for_notification(driver, "Don't miss it", timeout=15)
 
-        # Restore app
         try:
             driver.activate_app(pkg)
             time.sleep(2)
         except Exception:
             pass
 
-        # Mở notification shade trước khi assert để screenshot chụp đúng trạng thái
         if not noti_found:
             open_notification_shade(driver)
             time.sleep(1)
@@ -831,19 +882,41 @@ class TestNotification:
         """
         TC-008: Chỉ có file đã đọc 100%, opened từ Home, close app
         Expected: Hiện noti silent với 'Complete Reading Now'
-        Note: Test tương tự TC-006 - verification dựa trên notification content
         """
         pkg = cfg["app"]["package_name"]
         go_to_home(driver, cfg)
 
+        # Chọn file không phải Welcome
         items = find_all(driver, "vl_item_file_name", timeout=10)
-        if not items:
-            pytest.skip("Không có file nào để test TC-008")
+        target = next((el for el in items if "welcome" not in el.text.lower()), None)
 
-        # Mở file
-        file_name = items[0].text
-        items[0].click()
+        # Nếu không có file phù hợp → push file test
+        if target is None:
+            test_pdf_local = os.path.join(
+                os.path.dirname(__file__), "../../tests/resources/sample_simple.pdf"
+            )
+            remote_path = "/sdcard/Download/sample_simple.pdf"
+            adb.push_file(test_pdf_local, remote_path)
+            time.sleep(3)
+            go_to_home(driver, cfg)
+            items = find_all(driver, "vl_item_file_name", timeout=10)
+            target = next((el for el in items if "welcome" not in el.text.lower()), None)
+
+        if target is None:
+            pytest.skip("Không có file nào (ngoài Welcome) để test TC-008")
+
+        file_name = target.text
+        target.click()
         time.sleep(3)
+
+        # Dismiss ad nếu có
+        try:
+            from tests.helpers import dismiss_ads, _is_ad_showing
+            if _is_ad_showing(driver):
+                dismiss_ads(driver)
+                time.sleep(1)
+        except Exception:
+            pass
 
         # Cuộn đến cuối file để simulate đọc 100%
         if is_visible(driver, "doc_view", timeout=8):
@@ -898,6 +971,10 @@ class TestNotification:
         """
         TC-009: File đã đọc 100%, opened từ app khác, close app
         Expected: Hiện noti silent với 'Complete Reading Now'
+        Luồng:
+        1. Mở file từ app khác (dismiss ads nếu có)
+        2. Đọc file 100%
+        3. Close app hoặc chuyển app sang background
         """
         pkg = cfg["app"]["package_name"]
 
@@ -911,22 +988,32 @@ class TestNotification:
         adb.push_file(test_pdf_local, remote_path)
         time.sleep(1)
 
-        # Mở file từ intent (simulate app khác)
+        # Xóa notifications cũ trước khi bắt đầu
+        clear_all_notifications(driver)
+
+        # 1. Mở file từ intent (simulate app khác)
         adb._run([
             "shell", "am", "start",
             "-a", "android.intent.action.VIEW",
             "-t", "application/pdf",
             "-d", f"file://{remote_path}",
         ])
-        time.sleep(5)
+        time.sleep(3)
 
-        try:
-            driver.activate_app(pkg)
-            time.sleep(3)
-        except Exception:
-            pass
+        # Xử lý dialog "Open with..." nếu có
+        handle_open_with_chooser(driver)
+        time.sleep(3)
 
-        # Scroll đến cuối để simulate 100%
+        # Dismiss ads nếu có (chỉ dùng XPATH, không dùng fallback tap)
+        from tests.helpers import _is_ad_showing, dismiss_ads
+        for _ in range(3):
+            if is_visible(driver, "doc_view", timeout=3) or is_visible(driver, "imv_toolbar_back", timeout=2):
+                break
+            if _is_ad_showing(driver):
+                dismiss_ads(driver)
+                time.sleep(2)
+
+        # 2. Scroll đến cuối để đọc 100%
         if is_visible(driver, "doc_view", timeout=8):
             size = driver.get_window_size()
             w, h = size["width"], size["height"]
@@ -939,10 +1026,7 @@ class TestNotification:
             find(driver, "imv_toolbar_back").click()
             time.sleep(2)
 
-        # Xóa notifications cũ
-        clear_all_notifications(driver)
-
-        # Background app
+        # 3. Background app
         background_app(driver)
         time.sleep(3)
 
@@ -1127,26 +1211,20 @@ class TestNotification:
         clicked = click_notification_by_text(driver, "You have a new file", click_button_text=None)
         time.sleep(3)
 
+        if not clicked:
+            adb._run(["shell", "rm", remote_path])
+            assert False, "Không tìm thấy notification để click"
+
+        # Dismiss ads nếu có
         try:
             from tests.helpers import dismiss_ads, _is_ad_showing
             if _is_ad_showing(driver):
                 dismiss_ads(driver)
-                time.sleep(1)
-        except Exception:
-            pass
-
-        try:
-            driver.activate_app(pkg)
-            time.sleep(2)
+                time.sleep(2)
         except Exception:
             pass
 
         adb._run(["shell", "rm", remote_path])
-
-        if not clicked:
-            open_notification_shade(driver)
-            time.sleep(1)
-            assert False, "Không tìm thấy notification để click"
 
         reading_open = is_visible(driver, "imv_toolbar_back", timeout=8)
         home_open = is_visible(driver, "imv_home_menu_nav", timeout=5) if not reading_open else False

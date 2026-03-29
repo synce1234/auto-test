@@ -84,7 +84,8 @@ def _safe_dismiss_open_app_ad(driver, adb):
     while time.time() < deadline:
         try:
             activity = driver.current_activity or ""
-            if "AdActivity" not in activity and "ad" not in activity.lower():
+            is_ad = any(a in activity for a in ["AdActivity", "AdMob", "admob", "InterstitialAd"])
+            if not is_ad:
                 return  # Không có ad
         except Exception:
             return
@@ -116,25 +117,49 @@ def _open_via_intent(adb, uri: str, mime: str, component: str = None):
     time.sleep(5)
 
 
-def _handle_chooser(driver, pkg: str):
-    """Xử lý Android 'Open with' chooser nếu xuất hiện."""
+def _handle_chooser(driver, pkg: str, option_text: str = None):
+    """
+    Xử lý Android 'Open with' chooser nếu xuất hiện.
+    option_text: text của option cần chọn trong chooser (vd: "Note To File", "Mark Favourite").
+                 Nếu None thì chọn app PDF Reader (mặc định).
+    """
     try:
-        chooser_xpath = (
-            '//*[contains(@text,"PDF") and contains(@text,"Reader")]'
-            ' | //*[contains(@text,"All Docs")]'
-        )
-        el = WebDriverWait(driver, 5).until(
+        if option_text:
+            # Tìm theo text hoặc content-desc
+            chooser_xpath = (
+                f'//*[contains(@text,"{option_text}")]'
+                f' | //*[contains(@content-desc,"{option_text}")]'
+            )
+        else:
+            # App PDF Reader — tìm theo text hoặc content-desc
+            chooser_xpath = (
+                '//*[contains(@text,"PDF") and contains(@text,"Reader")]'
+                ' | //*[contains(@text,"All Docs")]'
+                ' | //*[contains(@content-desc,"PDF") and contains(@content-desc,"Reader")]'
+                ' | //*[contains(@content-desc,"All Docs")]'
+            )
+        el = WebDriverWait(driver, 8).until(
             EC.element_to_be_clickable((AppiumBy.XPATH, chooser_xpath))
         )
         el.click()
-        time.sleep(2)
-        for text in ["Just once", "Only this time"]:
-            try:
-                driver.find_element(AppiumBy.XPATH, f'//*[@text="{text}"]').click()
-                time.sleep(2)
-                break
-            except Exception:
-                pass
+        time.sleep(1)
+
+        # Chờ và click "Just once" / "Only this time" (dùng WebDriverWait thay vì find_element)
+        just_once_xpath = (
+            '//*[@text="Just once"]'
+            ' | //*[@text="Only this time"]'
+            ' | //*[contains(@text,"Just once")]'
+            ' | //*[contains(@text,"Only this time")]'
+            ' | //*[contains(@content-desc,"Just once")]'
+        )
+        try:
+            btn = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((AppiumBy.XPATH, just_once_xpath))
+            )
+            btn.click()
+            time.sleep(2)
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -184,6 +209,9 @@ def _is_file_in_star_tab(driver, filename_contains: str) -> bool:
         time.sleep(2)
     except Exception:
         return False
+
+    # Chọn filter "All Files" để hiển thị tất cả loại file (không chỉ PDF)
+    _set_filter_to_all(driver)
 
     # Tìm file trong rcv_star_file
     items = find_all(driver, "vl_item_file_name", timeout=8)
@@ -373,10 +401,22 @@ class TestOpenFilesOther:
     @pytest.fixture(autouse=True)
     def setup_teardown(self, driver, adb, cfg):
         """Setup: về home, dismiss ads. Teardown: xóa file test."""
-        if _is_ad_showing(driver):
-            dismiss_ads(driver)
-            time.sleep(1)
-        go_to_home(driver, cfg)
+        try:
+            if _is_ad_showing(driver):
+                dismiss_ads(driver)
+                time.sleep(1)
+            go_to_home(driver, cfg)
+        except Exception as e:
+            if "instrumentation process is not running" in str(e):
+                # UiAutomator2 crashed — dùng ADB thuần để về Home
+                import subprocess as _sp, os as _os
+                serial = _os.environ.get("TEST_DEVICE_SERIAL", "")
+                adb_prefix = ["adb", "-s", serial] if serial else ["adb"]
+                for _pkg in ["io.appium.uiautomator2.server", "io.appium.uiautomator2.server.test"]:
+                    _sp.run(adb_prefix + ["shell", "am", "force-stop", _pkg], capture_output=True)
+                _sp.run(adb_prefix + ["shell", "input", "keyevent", "3"], capture_output=True)
+                time.sleep(3)
+            # Bỏ qua lỗi setup — test sẽ fail/error nhưng session vẫn tiếp tục
         yield
         for remote_path in [REMOTE_PDF_PATH, REMOTE_PPTX_PATH, REMOTE_EPUB_PATH,
                             REMOTE_TXT_PATH, REMOTE_DOCX_PATH, REMOTE_XLSX_PATH,
@@ -1596,6 +1636,8 @@ class TestOpenFilesOther:
     def test_tc017_docx_open_from_external(self, driver, adb, cfg):
         """
         TC-017: Mở file Doc/Docx từ app khác
+        Steps: Gửi intent VIEW không chỉ định component → chooser hiện →
+               chọn app PDF Reader → Just once → dismiss ads → reader mở
         Expected: Reader mở thành công
         """
         if not os.path.exists(_res("sample.docx")):
@@ -1603,16 +1645,17 @@ class TestOpenFilesOther:
 
         _push(adb, "sample.docx", REMOTE_DOCX_PATH)
 
-        component = f"{PKG}/com.simple.pdf.reader.ui.main.SplashScreenActivity"
-        _open_via_intent(adb, f"file://{REMOTE_DOCX_PATH}", MIME_DOCX, component)
+        # Đảm bảo đang ở màn hình Home trước khi mở file từ app khác
+        driver.press_keycode(3)  # KEYCODE_HOME
+        time.sleep(1)
+
+        # Không chỉ định component để trigger Android chooser
+        _open_via_intent(adb, f"file://{REMOTE_DOCX_PATH}", MIME_DOCX)
+
+        # Chọn app PDF Reader trong chooser + "Just once"
+        _handle_chooser(driver, PKG)
 
         _safe_dismiss_open_app_ad(driver, adb)
-
-        try:
-            driver.activate_app(PKG)
-            time.sleep(2)
-        except Exception:
-            pass
 
         reader_open = _wait_reader_open(driver, timeout=25)
         assert reader_open, "Reader không mở sau khi mở Doc/Docx từ app khác"
@@ -1624,43 +1667,50 @@ class TestOpenFilesOther:
     @pytest.mark.tc_id("TC-018")
     def test_tc018_docx_mark_favourite(self, driver, adb, cfg):
         """
-        TC-018: Mở file Doc/Docx từ app khác với action Mark Favourite
-        Expected: Reader mở + file được thêm vào Favourite
+        TC-018: Mở file Doc/Docx từ app khác → bấm nút Star trong reader →
+                quay lại Home → vào tab Star → kiểm tra file có trong danh sách
+        Expected: File xuất hiện trong tab Star sau khi bấm nút Star
         """
         if not os.path.exists(_res("sample.docx")):
             pytest.skip("Không có sample.docx để test")
 
         _push(adb, "sample.docx", REMOTE_DOCX_PATH)
-        adb._run(["logcat", "-c"])
 
-        component = f"{PKG}/com.simple.pdf.reader.ui.main.DocFavouriteActivity"
-        _open_via_intent(adb, f"file://{REMOTE_DOCX_PATH}", MIME_DOCX, component)
+        # Đảm bảo đang ở màn hình Home trước khi mở file từ app khác
+        driver.press_keycode(3)  # KEYCODE_HOME
+        time.sleep(1)
 
+        # Mở file qua intent (chooser → chọn PDF Reader → Just once)
+        _open_via_intent(adb, f"file://{REMOTE_DOCX_PATH}", MIME_DOCX)
+        _handle_chooser(driver, PKG)
         _safe_dismiss_open_app_ad(driver, adb)
 
-        try:
-            driver.activate_app(PKG)
-            time.sleep(2)
-        except Exception:
-            pass
-
         reader_open = _wait_reader_open(driver, timeout=25)
-        assert reader_open, "Reader không mở sau khi launch DocFavouriteActivity với DOCX"
+        assert reader_open, "Reader không mở sau khi mở Doc/Docx từ app khác"
 
-        time.sleep(5)
+        # Bấm nút Star (imv_toolbar_star) trong reader
+        star_btn = find(driver, "imv_toolbar_star", timeout=10)
+        star_btn.click()
+        time.sleep(1)
 
-        _, logcat_out, _ = adb._run(["logcat", "-d"], timeout=15)
-        favourite_saved = "SAVED FAVORITE" in logcat_out
-        assert favourite_saved, "Favourite chưa được lưu (SAVED FAVORITE không tìm thấy trong logcat)"
+        # Quay lại Home
+        driver.back()
+        time.sleep(1)
+        go_to_home(driver, cfg)
 
-        print("\n  TC-018 PASS: Doc/Docx mark favourite thành công")
+        # Vào tab Star và kiểm tra file trong danh sách
+        in_star = _is_file_in_star_tab(driver, "sample_docx_autotest")
+        assert in_star, "File không xuất hiện trong tab Star sau khi bấm nút Star"
+
+        print("\n  TC-018 PASS: Doc/Docx mark favourite → file xuất hiện trong Star tab")
 
     # ── TC-019: Doc/Docx + Note to File ───────────────────────────────────
 
     @pytest.mark.tc_id("TC-019")
     def test_tc019_docx_note_to_file(self, driver, adb, cfg):
         """
-        TC-019: Mở file Doc/Docx từ app khác với action Note to File
+        TC-019: Mở file Doc/Docx từ app khác → chooser hiện → chọn 'Note To File' →
+                dismiss ads → reader mở + note popup hiện
         Expected: Reader mở + note popup hiện + keyboard focused
         """
         if not os.path.exists(_res("sample.docx")):
@@ -1668,19 +1718,20 @@ class TestOpenFilesOther:
 
         _push(adb, "sample.docx", REMOTE_DOCX_PATH)
 
-        component = f"{PKG}/com.simple.pdf.reader.ui.main.DocNoteActivity"
-        _open_via_intent(adb, f"file://{REMOTE_DOCX_PATH}", MIME_DOCX, component)
+        # Đảm bảo đang ở màn hình Home trước khi mở file từ app khác
+        driver.press_keycode(3)  # KEYCODE_HOME
+        time.sleep(1)
+
+        # Không chỉ định component để trigger Android chooser
+        _open_via_intent(adb, f"file://{REMOTE_DOCX_PATH}", MIME_DOCX)
+
+        # Chọn "Note To File" option trong chooser + "Just once"
+        _handle_chooser(driver, PKG, option_text="Note To File")
 
         _safe_dismiss_open_app_ad(driver, adb)
 
-        try:
-            driver.activate_app(PKG)
-            time.sleep(2)
-        except Exception:
-            pass
-
         reader_open = _wait_reader_open(driver, timeout=25)
-        assert reader_open, "Reader không mở sau khi launch DocNoteActivity với DOCX"
+        assert reader_open, "Reader không mở sau khi chọn 'Note To File' trong chooser"
 
         note_popup = _is_note_popup_visible(driver, timeout=15)
         assert note_popup, "Note popup không hiển thị sau khi mở DOCX với Note to File"
@@ -1696,64 +1747,36 @@ class TestOpenFilesOther:
     def test_tc020_xlsx_open_from_external(self, driver, adb, cfg):
         """
         TC-020: Mở file Excel (xlsx/xls) từ app khác
-        Expected: Show loading/ads + reader mở thành công
+        Steps: Gửi intent VIEW không chỉ định component → chooser hiện →
+               chọn app PDF Reader → Just once → dismiss ads → reader mở
+        Expected: Reader mở thành công
         """
         if not os.path.exists(_res("sample.xlsx")):
             pytest.skip("Không có sample.xlsx để test")
 
         _push(adb, "sample.xlsx", REMOTE_XLSX_PATH)
 
-        component = f"{PKG}/com.simple.pdf.reader.ui.main.SplashScreenActivity"
-        _open_via_intent(adb, f"file://{REMOTE_XLSX_PATH}", MIME_XLSX, component)
+        # Đảm bảo đang ở màn hình Home trước khi mở file từ app khác
+        driver.press_keycode(3)  # KEYCODE_HOME
+        time.sleep(1)
+
+        # Không chỉ định component để trigger Android chooser
+        _open_via_intent(adb, f"file://{REMOTE_XLSX_PATH}", MIME_XLSX)
+
+        # Chọn app PDF Reader trong chooser + "Just once"
+        _handle_chooser(driver, PKG)
 
         _safe_dismiss_open_app_ad(driver, adb)
-
-        try:
-            driver.activate_app(PKG)
-            time.sleep(2)
-        except Exception:
-            pass
 
         reader_open = _wait_reader_open(driver, timeout=25)
         assert reader_open, "Reader không mở sau khi mở Excel từ app khác"
 
         print("\n  TC-020 PASS: Excel mở từ app khác → reader hiển thị")
 
-    # ── TC-021: Excel + Mark Favourite ────────────────────────────────────
+    # ── TC-021: PDF có password từ Home ───────────────────────────────────
 
-    @pytest.mark.tc_id("TC-021")
-    def test_tc021_xlsx_mark_favourite(self, driver, adb, cfg):
-        """
-        TC-021: Mở file Excel từ app khác với action Mark Favourite
-        Expected: Reader mở + file được thêm vào Favourite
-        """
-        if not os.path.exists(_res("sample.xlsx")):
-            pytest.skip("Không có sample.xlsx để test")
-
-        _push(adb, "sample.xlsx", REMOTE_XLSX_PATH)
-        adb._run(["logcat", "-c"])
-
-        component = f"{PKG}/com.simple.pdf.reader.ui.main.DocFavouriteActivity"
-        _open_via_intent(adb, f"file://{REMOTE_XLSX_PATH}", MIME_XLSX, component)
-
-        _safe_dismiss_open_app_ad(driver, adb)
-
-        try:
-            driver.activate_app(PKG)
-            time.sleep(2)
-        except Exception:
-            pass
-
-        reader_open = _wait_reader_open(driver, timeout=25)
-        assert reader_open, "Reader không mở sau khi launch DocFavouriteActivity với XLSX"
-
-        time.sleep(5)
-
-        _, logcat_out, _ = adb._run(["logcat", "-d"], timeout=15)
-        favourite_saved = "SAVED FAVORITE" in logcat_out
-        assert favourite_saved, "Favourite chưa được lưu (SAVED FAVORITE không tìm thấy trong logcat)"
-
-        print("\n  TC-021 PASS: Excel mark favourite thành công")
+    # TC-021 (PDF có password từ Home) đã được triển khai trong:
+    # tests/test_suite/test_open_files_password.py::TestOpenFilesPassword::test_tc021_open_password_file_from_home
 
     # ── TC-022: Excel + Note to File ──────────────────────────────────────
 

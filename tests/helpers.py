@@ -176,8 +176,9 @@ def _safe_dismiss_open_app_ad(driver) -> bool:
     while time.time() < deadline:
         try:
             activity = driver.current_activity or ""
-            if "AdActivity" not in activity and "ad" not in activity.lower():
-                return True
+            is_ad = any(a in activity for a in ["AdActivity", "AdMob", "admob", "InterstitialAd"])
+            if not is_ad:
+                return True  # Không có ad
         except Exception:
             return True
         try:
