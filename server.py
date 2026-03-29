@@ -61,7 +61,10 @@ def _load_cfg():
 CFG = _load_cfg()
 APKS_DIR    = os.path.join(BASE_DIR, CFG["apks"]["dir"])
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
-SCRIPTS_DIR = os.path.join(BASE_DIR, "test_cases", "scripts")
+# Ưu tiên tests/test_suite (active suite), fallback về test_cases/scripts (legacy)
+_TEST_SUITE_DIR = os.path.join(BASE_DIR, "tests", "test_suite")
+_LEGACY_DIR     = os.path.join(BASE_DIR, "test_cases", "scripts")
+SCRIPTS_DIR = _TEST_SUITE_DIR if os.path.isdir(_TEST_SUITE_DIR) else _LEGACY_DIR
 
 # ── Global run state ──────────────────────────────────────────────────────────
 
@@ -157,6 +160,97 @@ def api_devices():
         return jsonify({"error": str(e)}), 500
 
 
+# ── API: TC Map (TC ID → pytest node ID) ─────────────────────────────────
+
+def _build_tc_map() -> dict:
+    """
+    Scan test files từ cả 2 thư mục → {TC_ID: pytest_node_id}.
+    Ưu tiên: @pytest.mark.tc_id marker → tên class TestTC001 → TC_001.
+    """
+    import ast as _ast
+    import re as _re
+    tc_map = {}
+
+    scan_dirs = []
+    # Legacy dir trước — class-name mapping (TestTC001→TC_001) có ưu tiên cao nhất
+    if os.path.isdir(_LEGACY_DIR):
+        scan_dirs.append((_LEGACY_DIR, "marker+class"))
+    # Test suite sau — marker-based, chỉ map nếu TC ID chưa có trong map
+    if os.path.isdir(SCRIPTS_DIR) and SCRIPTS_DIR != _LEGACY_DIR:
+        scan_dirs.append((SCRIPTS_DIR, "marker+class"))
+
+    for scan_dir, mode in scan_dirs:
+        rel_base = os.path.relpath(scan_dir, BASE_DIR)
+        for fname in sorted(os.listdir(scan_dir)):
+            if not (fname.startswith("test_") and fname.endswith(".py")):
+                continue
+            fpath = os.path.join(scan_dir, fname)
+            rel_path = os.path.join(rel_base, fname)
+            try:
+                with open(fpath) as f:
+                    tree = _ast.parse(f.read())
+                for cls_node in _ast.walk(tree):
+                    if not (isinstance(cls_node, _ast.ClassDef) and cls_node.name.startswith("Test")):
+                        continue
+
+                    # 1. Marker-based: @pytest.mark.tc_id trên từng method
+                    for func_node in cls_node.body:
+                        if not (isinstance(func_node, _ast.FunctionDef) and func_node.name.startswith("test_")):
+                            continue
+                        for deco in func_node.decorator_list:
+                            if not isinstance(deco, _ast.Call):
+                                continue
+                            attr = getattr(deco.func, "attr", None) or getattr(deco.func, "id", None)
+                            if attr == "tc_id" and deco.args and isinstance(deco.args[0], _ast.Constant):
+                                tc_id = str(deco.args[0].value).replace("-", "_")
+                                # Marker trỏ vào method cụ thể (không chạy cả class)
+                                if tc_id not in tc_map:
+                                    tc_map[tc_id] = f"{rel_path}::{cls_node.name}::{func_node.name}"
+
+                    # 2. Class-name-based: TestTC001 → TC_001 (nếu chưa có trong map)
+                    m = _re.match(r"TestTC(\d+)$", cls_node.name)
+                    if m:
+                        tc_id = f"TC_{m.group(1).zfill(3)}"
+                        if tc_id not in tc_map:
+                            tc_map[tc_id] = f"{rel_path}::{cls_node.name}"
+
+            except Exception:
+                pass
+
+    return tc_map
+
+
+@app.route("/api/testcases")
+def api_testcases():
+    """Trả về toàn bộ TC database kèm trạng thái automation."""
+    try:
+        import openpyxl as _xl
+        tc_map = _build_tc_map()
+        tc_excel = os.path.join(BASE_DIR, "test_cases", "test_cases.xlsx")
+        tcs = []
+        if os.path.exists(tc_excel):
+            wb = _xl.load_workbook(tc_excel, read_only=True, data_only=True)
+            ws = wb["Test Cases"]
+            row_num = 0
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not row[0]:
+                    continue
+                row_num += 1
+                tc_id = str(row[0]).strip()
+                tcs.append({
+                    "rowId":     row_num,   # ID cố định theo thứ tự trong Excel
+                    "id":        tc_id,
+                    "group":     str(row[1] or "").strip(),
+                    "title":     str(row[2] or "").strip(),
+                    "status":    str(row[7] or "NOT RUN").strip().upper(),
+                    "automated": tc_id in tc_map,
+                    "nodeid":    tc_map.get(tc_id, ""),
+                })
+        return jsonify(tcs)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ── API: Test scripts ─────────────────────────────────────────────────────────
 
 @app.route("/api/test-scripts")
@@ -213,19 +307,30 @@ def api_start_run():
     scripts       = data.get("scripts", [])      # ["test_open_app.py::TestTC001", ...]
     install_apks  = data.get("install_apks", []) # list of filenames in apks/
 
-    # Build pytest args — support "file.py::ClassName" node IDs
+    # Build pytest args — node IDs từ _build_tc_map() là path tương đối từ BASE_DIR
     if scripts:
         test_paths = []
         for s in scripts:
             if "::" in s:
-                fname, cls = s.split("::", 1)
-                test_paths.append(os.path.join(SCRIPTS_DIR, fname) + "::" + cls)
+                rel_path, node = s.split("::", 1)
+                # Nếu rel_path đã chứa '/' → là relative path từ BASE_DIR
+                if os.sep in rel_path or "/" in rel_path:
+                    test_paths.append(os.path.join(BASE_DIR, rel_path) + "::" + node)
+                else:
+                    test_paths.append(os.path.join(SCRIPTS_DIR, rel_path) + "::" + node)
             else:
-                test_paths.append(os.path.join(SCRIPTS_DIR, s))
+                if os.sep in s or "/" in s:
+                    test_paths.append(os.path.join(BASE_DIR, s))
+                else:
+                    test_paths.append(os.path.join(SCRIPTS_DIR, s))
     else:
         test_paths = [SCRIPTS_DIR]
 
-    cmd = [sys.executable, "-m", "pytest"] + test_paths + ["-v", "--tb=short", "--no-header"]
+    # rootdir = BASE_DIR để pytest tìm conftest.py ở root
+    cmd = [sys.executable, "-m", "pytest"] + test_paths + [
+        "--rootdir", BASE_DIR,
+        "-v", "--tb=short", "--no-header",
+    ]
 
     env = os.environ.copy()
     if device_serial:
@@ -306,6 +411,62 @@ def api_run_stream():
 
 def _emit(msg: dict):
     _run_queue.put(msg)
+
+
+# ── API: Config ───────────────────────────────────────────────────────────────
+
+_CONFIG_PATH = os.path.join(BASE_DIR, "config.yaml")
+
+@app.route("/api/config", methods=["GET"])
+def api_get_config():
+    """Trả về nội dung config.yaml dưới dạng JSON."""
+    try:
+        with open(_CONFIG_PATH) as f:
+            cfg = yaml.safe_load(f)
+        return jsonify(cfg)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/config", methods=["POST"])
+def api_save_config():
+    """Cập nhật config.yaml từ JSON gửi lên. Chỉ cập nhật các field đã biết."""
+    try:
+        data = request.json or {}
+        with open(_CONFIG_PATH) as f:
+            cfg = yaml.safe_load(f) or {}
+
+        # Merge từng section — chỉ ghi đè key đã biết, giữ nguyên phần còn lại
+        _merge = lambda dst, src: dst.update({k: v for k, v in src.items() if v is not None}) if src else None
+
+        if "app" in data:
+            cfg.setdefault("app", {})
+            _merge(cfg["app"], data["app"])
+        if "appium" in data:
+            cfg.setdefault("appium", {})
+            _merge(cfg["appium"], data["appium"])
+        if "device" in data:
+            cfg.setdefault("device", {})
+            _merge(cfg["device"], data["device"])
+        if "test" in data:
+            cfg.setdefault("test", {})
+            # Booleans được phép là False nên xử lý riêng
+            for k, v in (data["test"] or {}).items():
+                if v is not None:
+                    cfg["test"][k] = v
+        if "apks" in data:
+            cfg.setdefault("apks", {})
+            _merge(cfg["apks"], data["apks"])
+
+        with open(_CONFIG_PATH, "w") as f:
+            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+        # Reload global CFG
+        global CFG
+        CFG = _load_cfg()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ── API: Reports ──────────────────────────────────────────────────────────────

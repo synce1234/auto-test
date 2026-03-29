@@ -1,0 +1,6 @@
+Test document with hyperlink.
+
+Please visit our website: https://www.google.com
+
+This document contains a clickable link above.
+Click on the URL to open in browser.

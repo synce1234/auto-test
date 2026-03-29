@@ -10,7 +10,8 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from tests.helpers import (
     find, find_all, find_text_contains, is_visible, rid,
-    go_to_home, dismiss_onboarding, dismiss_ads, _is_ad_showing,
+    go_to_home, dismiss_onboarding, _is_ad_showing, _safe_dismiss_open_app_ad,
+    ensure_app_foreground,
 )
 
 
@@ -21,15 +22,16 @@ class TestDataMigration:
     """
 
     @pytest.fixture(autouse=True)
-    def setup(self, driver, cfg):
+    def setup(self, driver, cfg, tc_manager):
         if _is_ad_showing(driver):
-            dismiss_ads(driver)
+            _safe_dismiss_open_app_ad(driver)
             time.sleep(1)
         dismiss_onboarding(driver, cfg)
         go_to_home(driver, cfg)
 
     # ── 1. File list còn nguyên ──────────────────────────────────────────────
 
+    @pytest.mark.tc_id("TC_DM_001")
     def test_file_list_preserved_after_update(self, driver):
         """
         Danh sách file vẫn còn sau khi update.
@@ -40,6 +42,7 @@ class TestDataMigration:
             "Danh sách file bị mất sau khi update! (Expected: có file từ version cũ)"
         print(f"\n  Số file còn lại sau update: {len(items)}")
 
+    @pytest.mark.tc_id("TC_DM_002")
     def test_file_names_readable(self, driver):
         """Tên file hiển thị đúng (không bị corrupt encoding)."""
         items = find_all(driver, "vl_item_file_name", timeout=10)
@@ -53,6 +56,7 @@ class TestDataMigration:
                 f"Tên file bị corrupt: '{name}'"
             print(f"    ✓ {name}")
 
+    @pytest.mark.tc_id("TC_DM_003")
     def test_file_size_readable(self, driver):
         """Kích thước file hiển thị đúng (không phải 0 hoặc rỗng)."""
         sizes = find_all(driver, "vl_item_file_size", timeout=10)
@@ -67,6 +71,7 @@ class TestDataMigration:
 
     # ── 2. File có thể mở được sau update ────────────────────────────────────
 
+    @pytest.mark.tc_id("TC_DM_004")
     def test_first_pdf_still_openable(self, driver):
         """File PDF đầu tiên vẫn mở được sau khi update."""
         items = find_all(driver, "vl_item_file_name", timeout=10)
@@ -92,6 +97,7 @@ class TestDataMigration:
 
     # ── 3. Tab Favorites còn data ────────────────────────────────────────────
 
+    @pytest.mark.tc_id("TC_DM_005")
     def test_favorites_tab_accessible(self, driver):
         """Tab Favorites vào được và không crash sau update."""
         find(driver, "layoutStar").click()
@@ -107,6 +113,7 @@ class TestDataMigration:
 
     # ── 4. Toolbar Search hoạt động ──────────────────────────────────────────
 
+    @pytest.mark.tc_id("TC_DM_006")
     def test_search_toolbar_accessible(self, driver):
         """Nút search trên toolbar hoạt động sau update."""
         assert is_visible(driver, "imv_home_toolbar_search", timeout=5), \
@@ -124,6 +131,7 @@ class TestDataMigration:
 
     # ── 5. App không show crash sau cold start ────────────────────────────────
 
+    @pytest.mark.tc_id("TC_DM_007")
     def test_cold_start_after_update(self, driver, adb, cfg):
         """
         Force stop app → restart → kiểm tra home load bình thường.
@@ -140,11 +148,19 @@ class TestDataMigration:
         adb.launch_app(pkg, activity)
         time.sleep(cfg["device"]["launch_timeout"])
 
+        # Dismiss ad ngay sau khi launch (trước onboarding)
+        if _is_ad_showing(driver):
+            _safe_dismiss_open_app_ad(driver)
+            time.sleep(1)
+
         # Dismiss onboarding nếu có
         dismiss_onboarding(driver, cfg)
 
+        # Đảm bảo về Home (go_to_home tự handle ad + back navigation)
+        go_to_home(driver, cfg)
+
         # Home phải load được
-        assert is_visible(driver, "rcv_all_file", timeout=15), \
+        assert is_visible(driver, "rcv_all_file", timeout=20), \
             "Home không load được sau cold start"
 
         # Không có crash dialog

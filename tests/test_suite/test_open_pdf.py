@@ -11,28 +11,30 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from tests.helpers import (
     find, find_all, is_visible, rid,
-    go_to_home, dismiss_onboarding, dismiss_ads, _is_ad_showing,
+    go_to_home, dismiss_onboarding, _is_ad_showing, _safe_dismiss_open_app_ad,
 )
 
 
 class TestOpenPDF:
 
     @pytest.fixture(autouse=True)
-    def setup(self, driver, cfg):
+    def setup(self, driver, cfg, tc_manager):
         """Đảm bảo đang ở màn hình Home trước mỗi test."""
         if _is_ad_showing(driver):
-            dismiss_ads(driver)
+            _safe_dismiss_open_app_ad(driver)
             time.sleep(1)
         dismiss_onboarding(driver, cfg)
         go_to_home(driver, cfg)
 
     # ── 1. Home screen có file list ──────────────────────────────────────────
 
+    @pytest.mark.tc_id("TC_PDF_001")
     def test_file_list_visible(self, driver):
         """Màn hình home hiển thị danh sách file PDF."""
         rcv = find(driver, "rcv_all_file")
         assert rcv.is_displayed(), "RecyclerView danh sách file không hiển thị"
 
+    @pytest.mark.tc_id("TC_PDF_002")
     def test_file_list_not_empty(self, driver):
         """Danh sách file có ít nhất 1 item."""
         items = find_all(driver, "vl_item_file_name", timeout=10)
@@ -43,6 +45,7 @@ class TestOpenPDF:
 
     # ── 2. Mở file PDF ───────────────────────────────────────────────────────
 
+    @pytest.mark.tc_id("TC_PDF_003")
     def test_open_pdf_opens_viewer(self, driver):
         """Click vào file PDF → mở PDF viewer."""
         items = find_all(driver, "vl_item_file_name", timeout=10)
@@ -57,6 +60,7 @@ class TestOpenPDF:
             "PDF viewer không mở (không thấy title bar)"
         print(f"\n  Đã mở file: {first_file}")
 
+    @pytest.mark.tc_id("TC_PDF_004")
     def test_viewer_shows_page_number(self, driver):
         """PDF viewer hiển thị số trang."""
         items = find_all(driver, "vl_item_file_name", timeout=10)
@@ -69,6 +73,7 @@ class TestOpenPDF:
         assert "/" in page_text, f"Số trang hiển thị sai: '{page_text}'"
         print(f"\n  Số trang: {page_text}")
 
+    @pytest.mark.tc_id("TC_PDF_005")
     def test_viewer_bottom_toolbar_visible(self, driver):
         """Bottom toolbar trong viewer (Search, Favorite, Mode, More) hiển thị."""
         items = find_all(driver, "vl_item_file_name", timeout=10)
@@ -81,6 +86,7 @@ class TestOpenPDF:
         assert is_visible(driver, "imv_toolbar_search"), "Nút Search không có"
         assert is_visible(driver, "imv_toolbar_more"), "Nút More không có"
 
+    @pytest.mark.tc_id("TC_PDF_006")
     def test_viewer_back_returns_to_home(self, driver):
         """Bấm Back trong viewer → quay về màn hình Home."""
         items = find_all(driver, "vl_item_file_name", timeout=10)
@@ -97,6 +103,7 @@ class TestOpenPDF:
 
     # ── 3. Navigate pages ────────────────────────────────────────────────────
 
+    @pytest.mark.tc_id("TC_PDF_007")
     def test_scroll_down_in_viewer(self, driver):
         """Scroll xuống trong viewer không crash."""
         items = find_all(driver, "vl_item_file_name", timeout=10)
@@ -119,10 +126,12 @@ class TestOpenPDF:
 
     # ── 4. Tab navigation ────────────────────────────────────────────────────
 
+    @pytest.mark.tc_id("TC_PDF_008")
     def test_tab_files_visible(self, driver):
         """Tab 'Files' hiển thị ở home screen."""
         assert is_visible(driver, "layoutAll", timeout=5), "Tab Files không hiển thị"
 
+    @pytest.mark.tc_id("TC_PDF_009")
     def test_tab_favorites_clickable(self, driver):
         """Click tab Favorites không crash."""
         find(driver, "layoutStar").click()

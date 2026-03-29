@@ -97,6 +97,14 @@ thead th {
 tbody tr { border-bottom: 1px solid var(--border); transition: .1s; }
 tbody tr:last-child { border-bottom: none; }
 tbody tr:hover { background: var(--surface2); }
+tbody tr.tc-row:hover { background: var(--surface2); }
+tbody tr.tc-row.selected { background: #eff6ff; }
+.cfg-field { margin-bottom:12px; }
+.cfg-field label { display:block;font-size:12px;color:var(--muted);margin-bottom:4px;font-weight:500; }
+.cfg-input { width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--bg);color:var(--text);box-sizing:border-box; }
+.cfg-input:focus { outline:none;border-color:var(--primary);box-shadow:0 0 0 2px rgba(99,102,241,.15); }
+.cfg-checkbox label { display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);cursor:pointer;font-weight:400; }
+.cfg-checkbox label input { width:15px;height:15px;cursor:pointer; }
 tbody td { padding: 10px 12px; vertical-align: middle; }
 .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
 .chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
@@ -201,16 +209,44 @@ select option { background: var(--surface); }
 @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.3;} }
 
 /* ── Reports ──────────────────────────────────────────────────────────────── */
-#report-iframe {
-  /* Full-bleed: break out of main's max-width constraint */
-  display: block;
+#reports-layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 0;
+  height: calc(100vh - 120px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-top: 12px;
+  /* Break out of main's max-width */
   width: 100vw;
   position: relative;
   left: 50%;
   margin-left: -50vw;
-  height: calc(100vh - 130px);
+}
+#report-history-list {
+  overflow-y: auto;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+#report-history-list .rh-item {
+  padding: 10px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.5;
+  transition: background .15s;
+}
+#report-history-list .rh-item:hover { background: var(--surface2); }
+#report-history-list .rh-item.active { background: rgba(59,130,246,.12); border-left: 3px solid var(--blue); }
+#report-history-list .rh-item .rh-date { font-weight: 600; color: var(--text); }
+#report-history-list .rh-item .rh-meta { color: var(--muted); margin-top: 2px; }
+#report-iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
   border: none;
-  border-top: 1px solid var(--border);
   background: #fff;
 }
 
@@ -225,6 +261,32 @@ select option { background: var(--surface); }
 .toast-info { background: #172554; color: #93c5fd; border-color: var(--blue); }
 @keyframes slide-in { from{transform:translateX(40px);opacity:0;} to{transform:none;opacity:1;} }
 
+/* ── Test Cases Tab ───────────────────────────────────────────────────────── */
+.tc-filter-bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
+.tc-filter-bar input[type=text] {
+  flex:1; min-width:180px; padding:7px 12px; border-radius:var(--radius);
+  border:1px solid var(--border); background:var(--surface2); color:var(--text);
+  font-size:13px; outline:none;
+}
+.tc-filter-bar input[type=text]:focus { border-color:var(--blue); }
+.tc-filter-bar select, .tc-run-bar select {
+  padding:7px 10px; border-radius:var(--radius); border:1px solid var(--border);
+  background:var(--surface2); color:var(--text); font-size:13px; outline:none; cursor:pointer;
+}
+.chip-auto   { background:rgba(34,197,94,.15);  color:var(--green); }
+.chip-noauto { background:rgba(148,163,184,.08); color:var(--muted); }
+#tc-run-bar {
+  display:flex; align-items:center; gap:12px; margin-top:16px;
+  padding:12px 16px; background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius); position:sticky; bottom:16px; z-index:10;
+}
+#tc-selected-count { font-size:13px; color:var(--muted); flex:1; }
+#tc-console-wrap { margin-top:16px; background:#020617; border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; }
+.tc-console-header { display:flex; align-items:center; justify-content:space-between; padding:8px 14px; background:var(--surface); border-bottom:1px solid var(--border); }
+.tc-console-header span { font-size:12px; color:var(--muted); }
+#tc-console { overflow-y:auto; padding:12px 14px; font-family:'SF Mono','Fira Code','Courier New',monospace; font-size:12px; line-height:1.6; min-height:280px; max-height:420px; }
+.tc-row-cb:disabled { opacity:.3; cursor:not-allowed; }
+
 /* ── Misc ─────────────────────────────────────────────────────────────────── */
 .empty { text-align: center; padding: 48px; color: var(--muted); font-size: 13px; }
 </style>
@@ -237,7 +299,9 @@ select option { background: var(--surface); }
   <nav>
     <button class="active" onclick="switchTab('apks',this)">APKs</button>
     <button onclick="switchTab('run',this)">Run Tests</button>
+    <button onclick="switchTab('testcases',this)">Test Cases</button>
     <button onclick="switchTab('reports',this)">Reports</button>
+    <button onclick="switchTab('settings',this)">Settings</button>
   </nav>
 </header>
 
@@ -277,88 +341,173 @@ select option { background: var(--surface); }
   <!-- ════════════════════ TAB: RUN ══════════════════════════════════════ -->
   <div id="tab-run" class="tab">
     <div class="section-header">
-      <div><h2>Chạy Test</h2><p>Chọn device, test cases và bấm Start</p></div>
+      <div><h2>Đang chạy Test</h2><p id="run-meta" style="color:var(--muted);">Sẵn sàng — chọn Test Cases và bấm Start</p></div>
+      <button class="btn btn-danger" id="btn-stop" onclick="stopRun()" disabled>■ Stop</button>
     </div>
 
-    <div class="run-grid">
-      <!-- Left: config -->
-      <div>
-        <div class="card">
-
-          <!-- Device -->
-          <div class="form-group">
-            <div class="form-label">
-              <span>Device</span>
-              <button class="btn btn-ghost" style="padding:2px 8px;font-size:11px;" onclick="loadDevices()">↻</button>
-            </div>
-            <select id="device-select">
-              <option value="">-- Đang tải... --</option>
-            </select>
-          </div>
-
-          <!-- APK install -->
-          <div class="form-group">
-            <div class="form-label">
-              <span>Cài APK trước khi test <span style="font-weight:400;color:var(--muted)">(tùy chọn)</span></span>
-              <div class="sel-row">
-                <button onclick="setAllApks(true)">Tất cả</button>
-                <button onclick="setAllApks(false)">Bỏ chọn</button>
-              </div>
-            </div>
-            <div class="check-list" id="apk-install-list">
-              <div style="padding:10px 12px;color:var(--muted);font-size:13px;">Đang tải...</div>
-            </div>
-          </div>
-
-          <!-- Test cases -->
-          <div class="form-group">
-            <div class="form-label">
-              <span>Test Cases <span id="tc-count" style="font-weight:400;color:var(--muted)"></span></span>
-              <div class="sel-row">
-                <button onclick="setAllTc(true)">Tất cả</button>
-                <button onclick="setAllTc(false)">Bỏ chọn</button>
-              </div>
-            </div>
-            <div class="tc-list" id="tc-list">
-              <div style="padding:20px;text-align:center;color:var(--muted);font-size:13px;">Đang tải...</div>
-            </div>
-          </div>
-
-          <!-- Actions -->
-          <div style="display:flex;gap:8px;margin-top:4px;">
-            <button class="btn btn-primary" id="btn-start" onclick="startRun()" style="flex:1;">▶ Start Test</button>
-            <button class="btn btn-danger"  id="btn-stop"  onclick="stopRun()" disabled>■ Stop</button>
-          </div>
-        </div>
+    <!-- Info cards row -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px;">
+      <div class="card" style="padding:14px 16px;">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px;">Device</div>
+        <div id="run-device-info" style="font-size:13px;font-weight:500;">—</div>
       </div>
+      <div class="card" style="padding:14px 16px;">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px;">APK đang test</div>
+        <div id="run-apk-info" style="font-size:13px;font-weight:500;">—</div>
+      </div>
+      <div class="card" style="padding:14px 16px;">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px;">Test Cases <span id="run-tc-count" style="font-weight:400;"></span></div>
+        <div id="run-tc-info" style="font-size:12px;max-height:120px;overflow-y:auto;line-height:1.7;">—</div>
+      </div>
+    </div>
 
-      <!-- Right: console -->
-      <div id="console-wrap">
-        <div class="console-header">
-          <span>Console Output</span>
+    <!-- Console (full width) -->
+    <div id="console-wrap">
+      <div class="console-header">
+        <span>Console Output</span>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <a id="run-open-report" href="#" target="_blank" class="btn btn-ghost" style="padding:3px 10px;font-size:11px;display:none;">↗ Xem Report</a>
           <button class="btn btn-ghost" style="padding:3px 10px;font-size:11px;" onclick="clearConsole()">Clear</button>
         </div>
-        <div id="console">
-          <div class="log-line" style="color:#334155;">// Console output sẽ hiển thị ở đây khi chạy test</div>
-        </div>
-        <div id="run-status">
-          <span id="status-dot" style="width:8px;height:8px;border-radius:50%;background:var(--border);display:inline-block;flex-shrink:0;"></span>
-          <span id="status-text" style="color:var(--muted);">Sẵn sàng</span>
+      </div>
+      <div id="console">
+        <div class="log-line" style="color:#334155;">// Chọn Test Cases → bấm Start để bắt đầu test</div>
+      </div>
+      <div id="run-status">
+        <span id="status-dot" style="width:8px;height:8px;border-radius:50%;background:var(--border);display:inline-block;flex-shrink:0;"></span>
+        <span id="status-text" style="color:var(--muted);">Sẵn sàng</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════ TAB: TEST CASES ═══════════════════════════════ -->
+  <div id="tab-testcases" class="tab">
+    <div class="section-header">
+      <div><h2>Test Cases</h2><p id="tc-db-count" style="color:var(--muted);">Đang tải...</p></div>
+      <button class="btn btn-ghost" onclick="loadTestcases()">↻ Refresh</button>
+    </div>
+
+    <!-- Filter bar -->
+    <div class="tc-filter-bar">
+      <input type="text" id="tc-search" placeholder="Tìm TC ID hoặc tên..." oninput="filterTestcases()">
+      <select id="tc-group-filter" onchange="filterTestcases()">
+        <option value="">Tất cả nhóm</option>
+      </select>
+      <select id="tc-status-filter" onchange="filterTestcases()">
+        <option value="">Tất cả status</option>
+        <option value="PASS">PASS</option>
+        <option value="FAIL">FAIL</option>
+        <option value="NOT RUN">NOT RUN</option>
+        <option value="SKIP">SKIP</option>
+        <option value="NEED CONFIRM">NEED CONFIRM</option>
+      </select>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer;white-space:nowrap;">
+        <input type="checkbox" id="tc-auto-only" onchange="filterTestcases()"> Chỉ TC tự động
+      </label>
+      <div style="margin-left:auto;display:flex;gap:6px;">
+        <button class="btn btn-ghost" style="padding:5px 12px;font-size:12px;" onclick="tcSelectAll(true)">Chọn tất cả</button>
+        <button class="btn btn-ghost" style="padding:5px 12px;font-size:12px;" onclick="tcSelectAll(false)">Bỏ chọn</button>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="card" style="padding:0;overflow:hidden;">
+      <table>
+        <thead><tr>
+          <th style="width:36px;"><input type="checkbox" id="tc-check-all" onchange="tcToggleAll(this)"></th>
+          <th>TC ID</th>
+          <th>Nhóm</th>
+          <th>Nội dung test</th>
+          <th>Status</th>
+          <th>Automation</th>
+        </tr></thead>
+        <tbody id="tc-table-body">
+          <tr><td colspan="6" class="empty">Đang tải...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Run bar -->
+    <div id="tc-run-bar">
+      <select id="tc-device-select"><option value="">-- Chọn device --</option></select>
+      <span id="tc-selected-count">Chưa chọn TC nào</span>
+      <button class="btn btn-primary" id="btn-tc-start" onclick="runSelectedTc()">▶ Chạy TC đã chọn</button>
+      <button class="btn btn-danger"  id="btn-tc-stop"  onclick="stopTcRun()" disabled>■ Stop</button>
+    </div>
+
+    <!-- Console -->
+    <div id="tc-console-wrap">
+      <div class="tc-console-header">
+        <span>Console Output</span>
+        <span id="tc-status-text" style="color:var(--muted);">Sẵn sàng</span>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <a id="btn-tc-open-report" href="#" target="_blank" class="btn btn-ghost" style="padding:3px 10px;font-size:11px;display:none;">↗ Xem Report</a>
+          <button class="btn btn-ghost" style="padding:3px 10px;font-size:11px;" onclick="clearTcConsole()">Clear</button>
         </div>
       </div>
+      <div id="tc-console">
+        <div class="log-line" style="color:#334155;">// Output sẽ hiển thị ở đây khi chạy test</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════ TAB: SETTINGS ═════════════════════════════════ -->
+  <div id="tab-settings" class="tab">
+    <div class="section-header">
+      <div><h2>Settings</h2><p style="color:var(--muted);">Chỉnh sửa cấu hình config.yaml</p></div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-ghost" onclick="loadSettings()">↻ Reset</button>
+        <button class="btn btn-primary" onclick="saveSettings()">Lưu cấu hình</button>
+      </div>
+    </div>
+
+    <div style="max-width:480px;">
+
+      <!-- Test -->
+      <div class="card" style="padding:20px;">
+        <h3 style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:14px;">Test</h3>
+        <div class="cfg-field cfg-checkbox">
+          <label><input type="checkbox" id="cfg-test-screenshot_on_failure"> Screenshot khi test fail</label>
+        </div>
+        <div class="cfg-field cfg-checkbox">
+          <label><input type="checkbox" id="cfg-test-record_video"> Quay video (lưu toàn bộ từ đầu đến cuối mỗi test)</label>
+        </div>
+        <div class="cfg-field">
+          <label>Video Quality</label>
+          <select id="cfg-test-video_quality" class="cfg-input">
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+        </div>
+        <div class="cfg-field">
+          <label>Step Delay (giây)</label>
+          <input type="number" id="cfg-test-step_delay" class="cfg-input" min="0" max="10" step="0.1">
+        </div>
+        <div class="cfg-field">
+          <label>Retry Count</label>
+          <input type="number" id="cfg-test-retry_count" class="cfg-input" min="0" max="10">
+        </div>
+      </div>
+
     </div>
   </div>
 
   <!-- ════════════════════ TAB: REPORTS ══════════════════════════════════ -->
   <div id="tab-reports" class="tab">
     <div class="section-header">
-      <div><h2>Dashboard</h2><p id="report-meta" style="color:var(--muted);">Đang tải...</p></div>
+      <div><h2>Reports</h2><p id="report-meta" style="color:var(--muted);">Đang tải...</p></div>
       <div style="display:flex;gap:8px;">
         <button class="btn btn-ghost" onclick="loadReports()">↻ Refresh</button>
         <a id="report-open-link" href="#" target="_blank" class="btn btn-ghost" style="display:none;">↗ Mở tab mới</a>
       </div>
     </div>
-    <iframe id="report-iframe" src="about:blank"></iframe>
+    <div id="reports-layout">
+      <div id="report-history-list">
+        <div style="padding:10px 14px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border);">Lịch sử</div>
+      </div>
+      <iframe id="report-iframe" src="about:blank"></iframe>
+    </div>
   </div>
 
 </main>
@@ -378,9 +527,16 @@ function switchTab(name, btn) {
   document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
   if (btn) btn.classList.add('active');
-  if (name === 'apks')    loadApks();
-  if (name === 'run')     { loadDevices(); loadScripts(); loadApkInstallList(); }
-  if (name === 'reports') loadReports();
+  else {
+    // Find nav button by data-tab or by onclick content
+    document.querySelectorAll('nav button').forEach(b => {
+      if (b.getAttribute('onclick') && b.getAttribute('onclick').includes(`'${name}'`)) b.classList.add('active');
+    });
+  }
+  if (name === 'apks')      loadApks();
+  if (name === 'testcases') loadTestcases();
+  if (name === 'reports')   loadReports();
+  if (name === 'settings')  loadSettings();
 }
 
 // ── APK Tab ────────────────────────────────────────────────────────────────────
@@ -596,7 +752,6 @@ async function stopRun() {
 
 function setRunning(yes) {
   _running = yes;
-  document.getElementById('btn-start').disabled = yes;
   document.getElementById('btn-stop').disabled  = !yes;
   const dot  = document.getElementById('status-dot');
   const text = document.getElementById('status-text');
@@ -632,32 +787,278 @@ function clearConsole() {
   document.getElementById('console').innerHTML = '';
 }
 
+// ── Test Cases Tab ─────────────────────────────────────────────────────────────
+let _allTc = [], _filteredTc = [], _tcSse = null, _tcRunning = false;
+
+const _TC_STATUS_STYLE = {
+  'PASS':         'background:rgba(34,197,94,.15);color:#22c55e;',
+  'FAIL':         'background:rgba(239,68,68,.15);color:#ef4444;',
+  'SKIP':         'background:rgba(234,179,8,.15);color:#eab308;',
+  'NOT RUN':      'background:rgba(148,163,184,.08);color:#64748b;',
+  'NEED CONFIRM': 'background:rgba(168,85,247,.15);color:#a855f7;',
+};
+
+async function loadTestcases() {
+  const tbody   = document.getElementById('tc-table-body');
+  const dbCount = document.getElementById('tc-db-count');
+  tbody.innerHTML = '<tr><td colspan="6" class="empty">Đang tải...</td></tr>';
+  dbCount.textContent = 'Đang tải...';
+  _loadTcDevices();
+  try {
+    const r = await fetch('/api/testcases');
+    _allTc = await r.json();
+    if (_allTc.error) throw new Error(_allTc.error);
+    // Populate group filter
+    const groups = [...new Set(_allTc.map(t => t.group).filter(Boolean))].sort();
+    const gSel = document.getElementById('tc-group-filter');
+    gSel.innerHTML = '<option value="">Tất cả nhóm</option>' +
+      groups.map(g => `<option value="${g}">${g}</option>`).join('');
+    const auto = _allTc.filter(t => t.automated).length;
+    dbCount.textContent = `${_allTc.length} test cases · ${auto} tự động`;
+    filterTestcases();
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty" style="color:var(--red);">Lỗi: ${e.message}</td></tr>`;
+    dbCount.textContent = 'Lỗi tải dữ liệu';
+  }
+}
+
+async function _loadTcDevices() {
+  const sel = document.getElementById('tc-device-select');
+  try {
+    const r  = await fetch('/api/devices');
+    const ds = await r.json();
+    if (ds.error || !ds.length) { sel.innerHTML = '<option value="">-- Không có device --</option>'; return; }
+    sel.innerHTML = ds.map(d => `<option value="${d.serial}">${d.model} [${d.serial}]</option>`).join('');
+  } catch(e) { sel.innerHTML = `<option value="">Lỗi: ${e.message}</option>`; }
+}
+
+function filterTestcases() {
+  const search   = document.getElementById('tc-search').value.toLowerCase();
+  const group    = document.getElementById('tc-group-filter').value;
+  const status   = document.getElementById('tc-status-filter').value;
+  const autoOnly = document.getElementById('tc-auto-only').checked;
+  _filteredTc = _allTc.filter(t => {
+    if (group    && t.group  !== group)  return false;
+    if (status   && t.status !== status) return false;
+    if (autoOnly && !t.automated)        return false;
+    if (search   && !t.id.toLowerCase().includes(search) && !t.title.toLowerCase().includes(search)) return false;
+    return true;
+  });
+  renderTestcaseTable(_filteredTc);
+}
+
+function renderTestcaseTable(tcs) {
+  const tbody = document.getElementById('tc-table-body');
+  if (!tcs.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">Không có test case nào khớp</td></tr>';
+    _updateTcSelCount(); return;
+  }
+  tbody.innerHTML = tcs.map((t) => {
+    const st      = t.status || 'NOT RUN';
+    const stStyle = _TC_STATUS_STYLE[st] || _TC_STATUS_STYLE['NOT RUN'];
+    const autoChip = t.automated
+      ? '<span class="chip chip-auto">✓ Auto</span>'
+      : '<span class="chip chip-noauto">— Manual</span>';
+    const cbDisabled = t.automated ? '' : 'disabled title="Chưa có automation"';
+    return `<tr class="tc-row" onclick="_tcRowClick(event,'${t.id}',${t.automated})" style="cursor:pointer;">
+      <td style="width:36px;" onclick="event.stopPropagation()"><input type="checkbox" class="tc-row-cb" value="${t.id}" onchange="_updateTcSelCount()" ${cbDisabled}></td>
+      <td><span class="mono">${t.id}</span></td>
+      <td><span style="font-size:12px;color:var(--muted);">${t.group||'—'}</span></td>
+      <td style="max-width:400px;font-size:13px;">${t.title||'—'}</td>
+      <td><span class="chip" style="${stStyle}padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;">${st}</span></td>
+      <td>${autoChip}</td>
+    </tr>`;
+  }).join('');
+  _updateTcSelCount();
+}
+
+function _tcRowClick(event, tcId, automated) {
+  if (!automated) return;
+  const cb = event.currentTarget.querySelector('.tc-row-cb');
+  if (cb) { cb.checked = !cb.checked; _updateTcSelCount(); }
+}
+
+function _updateTcSelCount() {
+  const n = document.querySelectorAll('.tc-row-cb:checked').length;
+  document.getElementById('tc-selected-count').textContent = n ? `${n} TC đã chọn` : 'Chưa chọn TC nào';
+}
+
+function tcSelectAll(checked) {
+  document.querySelectorAll('.tc-row-cb:not([disabled])').forEach(cb => cb.checked = checked);
+  _updateTcSelCount();
+}
+function tcToggleAll(master) { tcSelectAll(master.checked); }
+
+async function runSelectedTc() {
+  if (_tcRunning) return;
+  const device = document.getElementById('tc-device-select').value;
+  if (!device) { toast('Chọn device trước', 'err'); return; }
+  const selectedIds = [...document.querySelectorAll('.tc-row-cb:checked')].map(c => c.value);
+  if (!selectedIds.length) { toast('Chọn ít nhất 1 TC', 'err'); return; }
+  const nodeIds = selectedIds.map(id => (_allTc.find(t => t.id === id)||{}).nodeid).filter(Boolean);
+  if (!nodeIds.length) { toast('Không có TC nào có automation', 'err'); return; }
+
+  // Populate Run tab info
+  const deviceOpt = document.getElementById('tc-device-select').selectedOptions[0];
+  const deviceLabel = deviceOpt ? deviceOpt.text : device;
+  document.getElementById('run-device-info').textContent = deviceLabel;
+
+  // APK info from loaded apks list
+  try {
+    const ar = await fetch('/api/apks');
+    const apkList = await ar.json();
+    const apkText = apkList.length
+      ? apkList.map(a => `v${a.version_name} (${a.filename})`).join('<br>')
+      : '—';
+    document.getElementById('run-apk-info').innerHTML = apkText;
+  } catch(_) { document.getElementById('run-apk-info').textContent = '—'; }
+
+  // TC list
+  document.getElementById('run-tc-count').textContent = `(${selectedIds.length})`;
+  document.getElementById('run-tc-info').innerHTML = selectedIds
+    .map(id => `<span class="mono" style="font-size:11px;">${id}</span>`).join('<br>');
+  document.getElementById('run-meta').textContent = `Đang chạy ${selectedIds.length} TC trên ${deviceLabel}`;
+
+  // Switch to Run tab
+  switchTab('run');
+
+  // Start run
+  clearConsole();
+  document.getElementById('run-open-report').style.display = 'none';
+  if (_sse) { _sse.close(); _sse = null; }
+  appendLog(`[INFO] Chạy ${nodeIds.length}/${selectedIds.length} TC (${selectedIds.length - nodeIds.length} manual bị bỏ qua)`);
+  const r = await fetch('/api/run', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ device, scripts: nodeIds }),
+  });
+  const d = await r.json();
+  if (!d.ok) { toast(d.error || 'Không thể bắt đầu', 'err'); return; }
+  _tcRunning = true;
+  setRunning(true);
+  _sse = new EventSource('/api/run/stream');
+  _sse.onmessage = e => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'ping') return;
+    if (msg.type === 'log')  appendLog(msg.text);
+    if (msg.type === 'done') {
+      _tcRunning = false;
+      setRunning(false); _sse.close(); _sse = null;
+      const ok = msg.code === 0;
+      toast(ok ? '✓ Test hoàn thành' : `✗ Kết thúc (code ${msg.code})`, ok ? 'ok' : 'err');
+      document.getElementById('status-text').textContent = ok ? '✓ Hoàn thành' : '✗ Kết thúc lỗi';
+      document.getElementById('status-text').style.color = ok ? 'var(--green)' : 'var(--red)';
+      document.getElementById('run-meta').textContent =
+        ok ? `✓ Hoàn thành — ${selectedIds.length} TC` : `✗ Kết thúc lỗi — ${selectedIds.length} TC`;
+      setTimeout(async () => {
+        try {
+          const rr = await fetch('/api/reports');
+          const rs = await rr.json();
+          if (rs.length) {
+            const btn = document.getElementById('run-open-report');
+            btn.href = `/reports/${rs[0].filename}`;
+            btn.style.display = 'inline-flex';
+          }
+        } catch(_) {}
+        loadTestcases();
+      }, 2500);
+    }
+  };
+  _sse.onerror = () => { if (_tcRunning) { _tcRunning = false; setRunning(false); appendLog('[SSE disconnected]'); } };
+}
+
+async function stopTcRun() {
+  await fetch('/api/run/stop', { method: 'POST' });
+  toast('Đã gửi lệnh dừng', 'info');
+}
+
+function _setTcRunning(yes) {
+  _tcRunning = yes;
+  document.getElementById('btn-tc-start').disabled = yes;
+  document.getElementById('btn-tc-stop').disabled  = !yes;
+  const txt = document.getElementById('tc-status-text');
+  txt.textContent = yes ? 'Đang chạy...' : 'Sẵn sàng';
+  txt.style.color = yes ? 'var(--green)' : 'var(--muted)';
+}
+
+function appendTcLog(line) {
+  const con = document.getElementById('tc-console');
+  const el  = document.createElement('div');
+  const low = line.toLowerCase();
+  let cls = 'log-line';
+  if (/\bpassed\b/.test(low))   cls += ' log-pass';
+  else if (/\bfailed\b/.test(low)) cls += ' log-fail';
+  else if (/\berror\b/.test(low) && !/={3}/.test(line)) cls += ' log-error';
+  else if (/\[info\]|\[cmd\]|\[install\]/.test(low)) cls += ' log-cmd';
+  else if (/^={3}|^-{3}/.test(line)) cls += ' log-sep';
+  el.className = cls; el.textContent = line;
+  con.appendChild(el); con.scrollTop = con.scrollHeight;
+}
+
+function clearTcConsole() {
+  document.getElementById('tc-console').innerHTML = '';
+  document.getElementById('tc-status-text').textContent = 'Sẵn sàng';
+  document.getElementById('tc-status-text').style.color = 'var(--muted)';
+}
+
 // ── Reports Tab ────────────────────────────────────────────────────────────────
+let _reports = [];
+
 async function loadReports() {
   const meta   = document.getElementById('report-meta');
-  const iframe = document.getElementById('report-iframe');
   const link   = document.getElementById('report-open-link');
   meta.textContent = 'Đang tải...';
   try {
     const r  = await fetch('/api/reports');
-    const rs = await r.json();
-    if (!rs.length) {
+    _reports = await r.json();
+    if (!_reports.length) {
       meta.textContent = 'Chưa có report nào';
+      document.getElementById('report-history-list').innerHTML =
+        '<div style="padding:10px 14px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border);">Lịch sử</div>' +
+        '<div style="padding:16px;font-size:12px;color:var(--muted);">Chưa có report nào</div>';
       return;
     }
-    const latest = rs[0]; // đã sort mới nhất lên đầu
-    const ts     = latest.ts || '';
-    const date   = ts.length >= 8 ? `${ts.slice(0,4)}-${ts.slice(4,6)}-${ts.slice(6,8)}` : ts;
-    const time   = ts.length >= 15 ? `${ts.slice(9,11)}:${ts.slice(11,13)}:${ts.slice(13,15)}` : '';
-    const url    = `/reports/${latest.filename}`;
-    meta.textContent    = `Lần chạy gần nhất: ${date} ${time}`;
-    iframe.src          = url;
-    link.href           = url;
-    link.style.display  = 'inline-flex';
+    meta.textContent = `${_reports.length} lần chạy`;
+    _renderReportHistory(_reports);
+    // Auto-load report mới nhất
+    _loadReportItem(_reports[0], 0);
   } catch(e) {
     meta.textContent = `Lỗi: ${e.message}`;
     meta.style.color = 'var(--red)';
   }
+}
+
+function _fmtTs(ts) {
+  if (!ts || ts.length < 8) return ts;
+  const date = `${ts.slice(0,4)}-${ts.slice(4,6)}-${ts.slice(6,8)}`;
+  const time = ts.length >= 15 ? `${ts.slice(9,11)}:${ts.slice(11,13)}:${ts.slice(13,15)}` : '';
+  return { date, time, full: `${date} ${time}`.trim() };
+}
+
+function _renderReportHistory(reports) {
+  const list = document.getElementById('report-history-list');
+  let html = '<div style="padding:10px 14px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border);">Lịch sử (' + reports.length + ')</div>';
+  reports.forEach((rep, i) => {
+    const f = _fmtTs(rep.ts);
+    const xlsx = rep.has_xlsx ? '<span style="font-size:10px;background:rgba(34,197,94,.15);color:#22c55e;padding:1px 5px;border-radius:3px;margin-left:4px;">xlsx</span>' : '';
+    html += `<div class="rh-item${i===0?' active':''}" onclick="_loadReportItem(_reports[${i}],${i})">
+      <div class="rh-date">${f.date} ${f.time}${xlsx}</div>
+      <div class="rh-meta">${rep.size_kb} KB</div>
+    </div>`;
+  });
+  list.innerHTML = html;
+}
+
+function _loadReportItem(rep, idx) {
+  const iframe = document.getElementById('report-iframe');
+  const link   = document.getElementById('report-open-link');
+  const url    = `/reports/${rep.filename}`;
+  iframe.src   = url;
+  link.href    = url;
+  link.style.display = 'inline-flex';
+  // Highlight active item
+  document.querySelectorAll('#report-history-list .rh-item').forEach((el, i) => {
+    el.classList.toggle('active', i === idx);
+  });
 }
 
 // ── Toast ──────────────────────────────────────────────────────────────────────
@@ -668,6 +1069,63 @@ function toast(msg, type = 'info') {
   el.textContent = msg;
   wrap.appendChild(el);
   setTimeout(() => el.remove(), 3500);
+}
+
+// ── Settings Tab ───────────────────────────────────────────────────────────────
+async function loadSettings() {
+  try {
+    const r = await fetch('/api/config');
+    const cfg = await r.json();
+    if (cfg.error) throw new Error(cfg.error);
+    _applyConfigToForm(cfg);
+  } catch(e) {
+    toast('Lỗi tải config: ' + e.message, 'err');
+  }
+}
+
+function _applyConfigToForm(cfg) {
+  const set = (id, val) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (el.type === 'checkbox') el.checked = !!val;
+    else el.value = (val === null || val === undefined) ? '' : val;
+  };
+  set('cfg-test-screenshot_on_failure',cfg.test?.screenshot_on_failure);
+  set('cfg-test-record_video',         cfg.test?.record_video);
+  set('cfg-test-video_quality',        cfg.test?.video_quality);
+  set('cfg-test-step_delay',           cfg.test?.step_delay);
+  set('cfg-test-retry_count',          cfg.test?.retry_count);
+}
+
+async function saveSettings() {
+  const get = id => {
+    const el = document.getElementById(id);
+    if (!el) return null;
+    if (el.type === 'checkbox') return el.checked;
+    if (el.type === 'number') return el.value === '' ? null : Number(el.value);
+    return el.value;
+  };
+  const payload = {
+    test: {
+      screenshot_on_failure: get('cfg-test-screenshot_on_failure'),
+      record_video:          get('cfg-test-record_video'),
+      video_quality:         get('cfg-test-video_quality'),
+      step_delay:            get('cfg-test-step_delay'),
+      retry_count:           get('cfg-test-retry_count'),
+    },
+  };
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (d.ok) toast('Đã lưu config.yaml', 'ok');
+    else throw new Error(d.error || 'Lỗi lưu config');
+  } catch(e) {
+    toast('Lỗi lưu: ' + e.message, 'err');
+  }
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────────

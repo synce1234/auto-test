@@ -1,41 +1,22 @@
-# Auto Test Configuration
 app:
-  package_name: "pdf.reader.pdf.viewer.all.document.reader.office.viewer"
-  main_activity: "com.simple.pdf.reader.ui.main.SplashScreenActivity"
-
+  package_name: pdf.reader.pdf.viewer.all.document.reader.office.viewer
+  main_activity: com.simple.pdf.reader.ui.main.SplashScreenActivity
 apks:
-  # Thư mục chứa APK - script tự scan, tự xác định latest theo versionCode
-  dir: "apks"
-
+  dir: apks
 device:
-  # Tự động phát hiện tất cả device đang kết nối và chạy test trên từng máy
-  # Để exclude một số device, liệt kê serial vào danh sách dưới (để trống = chạy tất cả)
   exclude: []
-  # Thời gian chờ app khởi động (giây)
   launch_timeout: 15
-  # Thời gian chờ mỗi UI action (giây)
   ui_timeout: 10
-
 appium:
-  host: "127.0.0.1"
+  host: 127.0.0.1
   port: 4723
-
 test:
-  # Chụp screenshot khi test fail
   screenshot_on_failure: true
-  # Quay video màn hình trong quá trình test
   record_video: true
-  # Chế độ lưu video: "on_failure" (chỉ lưu khi fail) | "always" (lưu tất cả)
-  video_save_mode: "always"
-  # Chất lượng video: "high" | "medium" | "low"
-  video_quality: "low"
-  # Chờ giữa các bước (giây) - tăng nếu device chậm
-  step_delay: 1.0
-  # Số lần retry khi test fail
+  video_save_mode: always
+  video_quality: low
+  step_delay: 1
   retry_count: 1
-
-# Test PDF files để dùng trong test cases
-# Đặt file vào tests/resources/
 test_pdfs:
-  simple: "tests/resources/sample_simple.pdf"
-  large: "tests/resources/sample_large.pdf"
+  simple: tests/resources/sample_simple.pdf
+  large: tests/resources/sample_large.pdf

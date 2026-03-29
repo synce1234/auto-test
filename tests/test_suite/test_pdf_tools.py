@@ -10,7 +10,7 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from tests.helpers import (
     find, find_all, is_visible, rid,
-    go_to_home, dismiss_onboarding, dismiss_ads, _is_ad_showing,
+    go_to_home, dismiss_onboarding, _is_ad_showing, _safe_dismiss_open_app_ad,
     open_fab_menu, close_fab_menu,
 )
 
@@ -18,22 +18,27 @@ from tests.helpers import (
 class TestPDFTools:
 
     @pytest.fixture(autouse=True)
-    def setup(self, driver, cfg):
+    def setup(self, driver, cfg, tc_manager):
         """Đảm bảo đang ở Home và FAB menu đóng trước mỗi test."""
         if _is_ad_showing(driver):
-            dismiss_ads(driver)
+            _safe_dismiss_open_app_ad(driver)
             time.sleep(1)
         dismiss_onboarding(driver, cfg)
         go_to_home(driver, cfg)
+        # Đảm bảo FAB menu đóng (có thể còn mở từ test trước)
+        close_fab_menu(driver)
+        time.sleep(0.5)
 
     # ── FAB Menu ─────────────────────────────────────────────────────────────
 
+    @pytest.mark.tc_id("TC_TOOL_001")
     def test_fab_menu_opens(self, driver):
         """Bấm FAB (+) → bottom sheet tool menu xuất hiện."""
         result = open_fab_menu(driver)
         assert result, "FAB menu không mở được"
         close_fab_menu(driver)
 
+    @pytest.mark.tc_id("TC_TOOL_002")
     def test_fab_menu_has_all_tools(self, driver):
         """Tool menu có đủ các nút: Split, Merge, Sign, Scanner, Image to PDF."""
         open_fab_menu(driver)
@@ -55,6 +60,7 @@ class TestPDFTools:
 
     # ── Split PDF ────────────────────────────────────────────────────────────
 
+    @pytest.mark.tc_id("TC_TOOL_003")
     def test_split_pdf_screen_opens(self, driver):
         """Mở màn hình Split PDF không crash."""
         open_fab_menu(driver)
@@ -73,6 +79,7 @@ class TestPDFTools:
         driver.back()
         time.sleep(1)
 
+    @pytest.mark.tc_id("TC_TOOL_004")
     def test_split_pdf_file_list_visible(self, driver):
         """Màn hình Split PDF hiển thị danh sách file để chọn."""
         open_fab_menu(driver)
@@ -96,6 +103,7 @@ class TestPDFTools:
 
     # ── Merge PDF ────────────────────────────────────────────────────────────
 
+    @pytest.mark.tc_id("TC_TOOL_005")
     def test_merge_pdf_screen_opens(self, driver):
         """Mở màn hình Merge PDF không crash."""
         open_fab_menu(driver)
@@ -111,6 +119,7 @@ class TestPDFTools:
 
     # ── PDF Scanner ──────────────────────────────────────────────────────────
 
+    @pytest.mark.tc_id("TC_TOOL_006")
     def test_scanner_screen_opens(self, driver):
         """Mở màn hình PDF Scanner không crash."""
         open_fab_menu(driver)
@@ -126,6 +135,7 @@ class TestPDFTools:
 
     # ── Sign PDF ─────────────────────────────────────────────────────────────
 
+    @pytest.mark.tc_id("TC_TOOL_007")
     def test_sign_pdf_screen_opens(self, driver):
         """Mở màn hình Sign PDF không crash."""
         open_fab_menu(driver)

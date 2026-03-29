@@ -31,10 +31,11 @@ COL = {
 }
 
 STATUS_COLORS = {
-    "PASS":    "C6EFCE",
-    "FAIL":    "FFC7CE",
-    "SKIP":    "FFEB9C",
-    "NOT RUN": "F2F2F2",
+    "PASS":         "C6EFCE",
+    "FAIL":         "FFC7CE",
+    "SKIP":         "FFEB9C",
+    "NOT RUN":      "F2F2F2",
+    "NEED CONFIRM": "BDD7EE",
 }
 
 
@@ -143,15 +144,19 @@ class TCManager:
         ws_info = wb.create_sheet("Run Info")
         ws_info["A1"] = "Thông tin lần chạy"
         ws_info["A1"].font = Font(bold=True, size=13)
+        total        = len(self._results)
+        passed       = sum(1 for r in self._results.values() if r["status"] == "PASS")
+        failed       = sum(1 for r in self._results.values() if r["status"] == "FAIL")
+        skipped      = sum(1 for r in self._results.values() if r["status"] == "SKIP")
+        need_confirm = sum(1 for r in self._results.values() if r["status"] == "NEED CONFIRM")
         run_info = [
             ("Thời điểm chạy",  datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-            ("Tổng TC",         len(self._results)),
-            ("PASS",            sum(1 for r in self._results.values() if r["status"] == "PASS")),
-            ("FAIL",            sum(1 for r in self._results.values() if r["status"] == "FAIL")),
-            ("SKIP",            sum(1 for r in self._results.values() if r["status"] == "SKIP")),
+            ("Tổng TC",         total),
+            ("PASS",            passed),
+            ("FAIL",            failed),
+            ("SKIP",            skipped),
+            ("NEED CONFIRM",    need_confirm),
         ]
-        total = len(self._results)
-        passed = sum(1 for r in self._results.values() if r["status"] == "PASS")
         run_info.append(("Tỉ lệ Pass", f"{passed/total*100:.1f}%" if total else "N/A"))
 
         for row_idx, (label, value) in enumerate(run_info, start=2):
@@ -166,9 +171,10 @@ class TCManager:
         return report_path
 
     def _print_summary(self):
-        total  = len(self._results)
-        passed = sum(1 for r in self._results.values() if r["status"] == "PASS")
-        failed = sum(1 for r in self._results.values() if r["status"] == "FAIL")
-        skipped= sum(1 for r in self._results.values() if r["status"] == "SKIP")
-        rate   = f"{passed/total*100:.1f}%" if total else "N/A"
-        print(f"  Tổng: {total} | ✅ PASS: {passed} | ❌ FAIL: {failed} | ⏭ SKIP: {skipped} | Tỉ lệ: {rate}")
+        total        = len(self._results)
+        passed       = sum(1 for r in self._results.values() if r["status"] == "PASS")
+        failed       = sum(1 for r in self._results.values() if r["status"] == "FAIL")
+        skipped      = sum(1 for r in self._results.values() if r["status"] == "SKIP")
+        need_confirm = sum(1 for r in self._results.values() if r["status"] == "NEED CONFIRM")
+        rate         = f"{passed/total*100:.1f}%" if total else "N/A"
+        print(f"  Tổng: {total} | ✅ PASS: {passed} | ❌ FAIL: {failed} | ⏭ SKIP: {skipped} | 🔍 NEED CONFIRM: {need_confirm} | Tỉ lệ: {rate}")

@@ -154,50 +154,41 @@ def dismiss_ads(driver) -> bool:
 def _is_ad_showing(driver) -> bool:
     """
     Kiểm tra có đang hiển thị open app ad không.
-    AdMob Open App Ad thường chạy trong Activity riêng — cần check nhiều cách.
+    Chỉ dùng current_activity để tránh crash UIAutomator2 khi WebView present.
     """
     try:
-        # Cách 1: Check activity name (AdMob dùng AdActivity hoặc tương tự)
         activity = driver.current_activity or ""
         if any(a in activity for a in ["AdActivity", "AdMob", "admob", "InterstitialAd"]):
             return True
-
-        # Cách 2: Check tất cả windows (ad có thể ở window khác)
-        current_source = ""
-        try:
-            handles = driver.window_handles
-            original = driver.current_window_handle
-            for handle in handles:
-                try:
-                    driver.switch_to.window(handle)
-                    current_source += driver.page_source
-                except Exception:
-                    pass
-            driver.switch_to.window(original)
-        except Exception:
-            current_source = driver.page_source
-
-        ad_indicators = [
-            "Continue to app",
-            "com.google.android.gms:id/close_button",
-            "com.google.android.gms:id/skip_ad_button",
-        ]
-        if any(indicator in current_source for indicator in ad_indicators):
-            return True
-
-        # Cách 3: XPATH tìm trực tiếp element "Continue to app"
-        try:
-            el = driver.find_element(
-                AppiumBy.XPATH,
-                '//*[contains(@text,"Continue to app") or contains(@content-desc,"Continue to app")]'
-            )
-            return el is not None
-        except Exception:
-            pass
-
         return False
     except Exception:
         return False
+
+
+def _safe_dismiss_open_app_ad(driver) -> bool:
+    """
+    Dismiss AdMob Open App Ad bằng cách tap vào vị trí 'Continue to app >'.
+    KHÔNG dùng window_handles hay page_source để tránh crash UIAutomator2.
+    'Continue to app >' nằm trong WebView nên không thể find bằng XPATH.
+    Coords: ~96% width, ~10.6% height trên màn hình 1080x2400.
+    """
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        try:
+            activity = driver.current_activity or ""
+            if "AdActivity" not in activity and "ad" not in activity.lower():
+                return True
+        except Exception:
+            return True
+        try:
+            size = driver.get_window_size()
+            x = int(size["width"] * 0.96)
+            y = int(size["height"] * 0.106)
+            driver.tap([(x, y)])
+        except Exception:
+            pass
+        time.sleep(2)
+    return False
 
 
 # ─── App State ────────────────────────────────────────────────────────────────
@@ -212,7 +203,7 @@ def ensure_app_foreground(driver, cfg: dict):
             time.sleep(3)
             # Dismiss ad ngay sau khi activate
             if _is_ad_showing(driver):
-                dismiss_ads(driver)
+                _safe_dismiss_open_app_ad(driver)
                 time.sleep(1)
     except Exception:
         try:
@@ -223,17 +214,36 @@ def ensure_app_foreground(driver, cfg: dict):
 
 
 def go_to_home(driver, cfg: dict):
-    """Navigate về màn hình Home. Dismiss ad và re-launch app nếu cần."""
+    """Navigate về màn hình Home. Dismiss ad, onboarding và re-launch app nếu cần."""
     ensure_app_foreground(driver, cfg)
 
-    for _ in range(6):
+    for _ in range(10):
         # Dismiss ad nếu đang show
         if _is_ad_showing(driver):
-            dismiss_ads(driver)
+            _safe_dismiss_open_app_ad(driver)
             time.sleep(1)
+            continue
 
         if is_visible(driver, "rcv_all_file", timeout=2):
             return True
+
+        # Xử lý Language screen (onboarding)
+        if is_visible(driver, "btn_continue", timeout=2):
+            find(driver, "btn_continue").click()
+            time.sleep(2)
+            continue
+
+        # Xử lý Permission dialog
+        if is_visible(driver, "btnDialogConfirm", timeout=2):
+            find(driver, "btnDialogConfirm").click()
+            time.sleep(2)
+            try:
+                driver.activate_app(cfg["app"]["package_name"])
+                time.sleep(2)
+            except Exception:
+                pass
+            continue
+
         try:
             driver.back()
             time.sleep(1)
@@ -246,6 +256,10 @@ def go_to_home(driver, cfg: dict):
 
 def open_fab_menu(driver):
     """Mở FAB tool menu."""
+    # Nếu FAB menu đang mở rồi thì close trước
+    if is_visible(driver, "btn_split_file", timeout=1):
+        close_fab_menu(driver)
+        time.sleep(0.5)
     btn = find(driver, "btn_action_create_file")
     btn.click()
     time.sleep(1)
@@ -289,7 +303,7 @@ def dismiss_onboarding(driver, cfg: dict):
 
         # 2. Open App Ad ("Continue to app" hoặc nút X)
         if _is_ad_showing(driver):
-            dismiss_ads(driver)
+            _safe_dismiss_open_app_ad(driver)
             time.sleep(1)
             continue
 

@@ -59,18 +59,33 @@ def _asset_dirs(run_ts: str | None) -> tuple[str, str]:
 
 
 def _find_all_in_dir(directory: str, tc_id: str, ext: str) -> list[str]:
-    """Trả về danh sách tất cả file khớp TC ID trong directory."""
+    """Trả về danh sách tất cả file khớp TC ID trong directory.
+
+    Ưu tiên match theo TC ID (tc_sm_001, tc_pdf_003, ...) trong tên file.
+    Fallback: match theo số thứ tự 3 chữ số (tc_001, tc001) cho TC cũ.
+    """
     if not os.path.isdir(directory):
         return []
-    tc_num = tc_id.replace("TC_", "").lstrip("0") or "0"
-    pat1 = f"tc_{tc_num.zfill(3)}"   # tc_001
-    pat2 = f"tc{tc_num.zfill(3)}"    # tc001
+
+    # Pattern mới: tc_id trực tiếp trong tên file (vd: tc_sm_001, tc_pdf_003, tc_dm_007)
+    pat_direct = tc_id.lower()  # vd: "tc_sm_001"
+
+    # Pattern cũ (backward compat): chỉ lấy phần số cuối
+    import re as _re
+    num_match = _re.search(r'(\d+)$', tc_id)
+    tc_num = num_match.group(1).lstrip("0") if num_match else ""
+    pat_numeric1 = f"tc_{tc_num.zfill(3)}" if tc_num else ""  # tc_001
+    pat_numeric2 = f"tc{tc_num.zfill(3)}"  if tc_num else ""  # tc001
+
     results = []
     for fname in sorted(os.listdir(directory)):
-        if fname.lower().endswith(ext):
-            base = fname[: -len(ext)].lower()
-            if pat1 in base or pat2 in base:
-                results.append(os.path.join(directory, fname))
+        if not fname.lower().endswith(ext):
+            continue
+        base = fname[: -len(ext)].lower()
+        if (pat_direct and pat_direct in base) or \
+           (pat_numeric1 and pat_numeric1 in base) or \
+           (pat_numeric2 and pat_numeric2 in base):
+            results.append(os.path.join(directory, fname))
     return results
 
 
@@ -188,10 +203,11 @@ def _load_history(current_ts: str | None = None) -> list[dict]:
 # ─── HTML helpers ───────────────────────────────────────────────────────────────
 
 _STATUS_COLOR = {
-    "PASS":    ("#C6EFCE", "#276221", "✅"),
-    "FAIL":    ("#FFC7CE", "#9C0006", "❌"),
-    "SKIP":    ("#FFEB9C", "#7D6608", "⏭"),
-    "NOT RUN": ("#F2F2F2", "#555555", "⬜"),
+    "PASS":         ("#C6EFCE", "#276221", "✅"),
+    "FAIL":         ("#FFC7CE", "#9C0006", "❌"),
+    "SKIP":         ("#FFEB9C", "#7D6608", "⏭"),
+    "NOT RUN":      ("#F2F2F2", "#555555", "⬜"),
+    "NEED CONFIRM": ("#BDD7EE", "#1F497D", "👁"),
 }
 
 
@@ -317,14 +333,14 @@ def _group_section(group_name: str, cases: list[dict]) -> str:
 
 def generate_html(cases: list[dict], run_info: dict, history: list[dict],
                   run_ts: str | None = None) -> str:
-    # Attach assets to current run cases
-    current_cases = _attach_assets(cases, run_ts)
+    # Attach assets to current run cases, chỉ giữ lại các TC đã chạy
+    current_cases = [c for c in _attach_assets(cases, run_ts) if c["status"] != "NOT RUN"]
 
     total   = len(current_cases)
     passed  = sum(1 for c in current_cases if c["status"] == "PASS")
     failed  = sum(1 for c in current_cases if c["status"] == "FAIL")
     skipped = sum(1 for c in current_cases if c["status"] == "SKIP")
-    not_run = total - passed - failed - skipped
+    not_run = 0
     rate    = f"{passed/total*100:.1f}%" if total else "N/A"
 
     run_display = run_info.get("timestamp", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -588,6 +604,7 @@ const _STATUS_INFO = {{
 function _buildTcContainer(run) {{
   const groups = {{}};
   for (const c of run.cases) {{
+    if (c.status === 'NOT RUN') continue;
     const g = c.group || 'Uncategorized';
     if (!groups[g]) groups[g] = [];
     groups[g].push(c);

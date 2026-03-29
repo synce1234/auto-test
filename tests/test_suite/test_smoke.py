@@ -11,6 +11,12 @@ from selenium.webdriver.support import expected_conditions as EC
 
 class TestSmoke:
 
+    @pytest.fixture(autouse=True)
+    def _ensure_tc_manager(self, tc_manager):
+        """Inject tc_manager vào funcargs để conftest hook ghi kết quả."""
+        pass
+
+    @pytest.mark.tc_id("TC_SM_001")
     def test_app_launches_without_crash(self, driver, cfg):
         """App khởi động và hiển thị màn hình home trong vòng 15 giây"""
         wait = WebDriverWait(driver, cfg["device"]["launch_timeout"])
@@ -26,6 +32,7 @@ class TestSmoke:
             source = driver.page_source
             assert len(source) > 100, "App không có UI sau khi khởi động"
 
+    @pytest.mark.tc_id("TC_SM_002")
     def test_no_crash_dialog(self, driver):
         """Không có dialog 'App stopped' sau khi update"""
         time.sleep(2)
@@ -39,6 +46,7 @@ class TestSmoke:
         for keyword in crash_keywords:
             assert keyword not in source, f"App bị crash: tìm thấy '{keyword}' trên màn hình"
 
+    @pytest.mark.tc_id("TC_SM_003")
     def test_bottom_navigation_visible(self, driver):
         """Bottom navigation bar hiển thị đúng"""
         # Tìm bottom nav bằng nhiều cách
@@ -66,6 +74,7 @@ class TestSmoke:
         source = driver.page_source
         assert len(source) > 200, "UI quá đơn giản, có thể app bị lỗi"
 
+    @pytest.mark.tc_id("TC_SM_004")
     def test_app_version_updated(self, driver, adb, cfg):
         """Version app đọc được từ device sau khi install"""
         installed_version = adb.get_installed_version(cfg["app"]["package_name"])
