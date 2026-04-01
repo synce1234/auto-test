@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from tests.helpers import (
     find, find_all, find_text, is_visible, rid,
     go_to_home, dismiss_ads, _is_ad_showing, ensure_app_foreground,
+    wait_uia2_ready,
 )
 
 PKG = "pdf.reader.pdf.viewer.all.document.reader.office.viewer"
@@ -76,32 +77,131 @@ def _push(adb, local_name: str, remote_path: str):
 
 def _safe_dismiss_open_app_ad(driver, adb):
     """
-    Dismiss AdMob open-app ad an toàn, không dùng window_handles hay page_source
-    (tránh crash UIAutomator2 khi WebView hiện diện).
-    Dùng driver.current_activity để check + driver.tap() cho dismiss.
+    Dismiss AdMob open-app ad hoàn toàn bằng ADB (không dùng Appium) để tránh
+    UiAutomator2 crash khi ad loading screen đang hiện (full-screen WebView overlay).
+
+    Flow:
+    1. Dùng uiautomator dump (ADB) để tìm nút "Continue to app" / "Skip Ad"
+    2. Nếu tìm được → tap bằng ADB
+    3. Nếu không tìm được sau 30s → tap tọa độ cố định bằng ADB
+    4. Sau khi dismiss (hoặc timeout), gọi wait_uia2_ready để Appium recover
     """
-    deadline = time.time() + 20
-    while time.time() < deadline:
-        try:
-            activity = driver.current_activity or ""
-            is_ad = any(a in activity for a in ["AdActivity", "AdMob", "admob", "InterstitialAd"])
-            if not is_ad:
-                return  # Không có ad
-        except Exception:
-            return
-        # Click "Continue to app >" — nằm trong WebView ở góc trên phải
-        # Tọa độ tương đối: x=96%, y=10.6% của màn hình
-        try:
-            size = driver.get_window_size()
-            x = int(size["width"] * 0.96)
-            y = int(size["height"] * 0.106)
-            driver.tap([(x, y)])
-        except Exception:
+    import xml.etree.ElementTree as ET
+    import re as _re
+
+    _DISMISS_TEXTS = {"Continue to app", "Skip Ad", "Skip ad", "Close ad"}
+    _READER_IDS = {"imv_toolbar_back", "doc_view"}
+
+    def _adb_dump():
+        """Dump toàn bộ windows bằng ADB. Trả về root Element hoặc None."""
+        for flag in [["--windows"], []]:
             try:
-                adb._run(["shell", "input", "tap", "1040", "255"])
+                adb._run(["shell", "uiautomator", "dump"] + flag + ["/sdcard/uidump.xml"])
+                _, stdout, _ = adb._run(["shell", "cat", "/sdcard/uidump.xml"])
+                if stdout and "<hierarchy" in stdout:
+                    return ET.fromstring(stdout)
             except Exception:
                 pass
-        time.sleep(2)
+        return None
+
+    def _find_center(root, texts):
+        """Tìm node theo text/content-desc, trả về (cx, cy) hoặc None."""
+        for node in root.iter("node"):
+            t = node.get("text", "")
+            d = node.get("content-desc", "")
+            if any(x in t or x in d for x in texts):
+                nums = _re.findall(r"\d+", node.get("bounds", ""))
+                if len(nums) >= 4:
+                    return (int(nums[0]) + int(nums[2])) // 2, (int(nums[1]) + int(nums[3])) // 2
+        return None
+
+    def _reader_open_adb(root):
+        """Kiểm tra reader đã mở qua resource-id."""
+        for node in root.iter("node"):
+            rid = node.get("resource-id", "")
+            if any(r in rid for r in _READER_IDS):
+                return True
+        return False
+
+    def _get_screen_size():
+        try:
+            _, stdout, _ = adb._run(["shell", "wm", "size"])
+            m = _re.search(r"(\d+)x(\d+)", stdout or "")
+            if m:
+                return int(m.group(1)), int(m.group(2))
+        except Exception:
+            pass
+        return 1080, 2400
+
+    # Kiểm tra system UI trước (không dùng Appium để tránh crash)
+    try:
+        _, focus, _ = adb._run(["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"])
+        if any(s in (focus or "") for s in ("ResolverActivity", "ChooserActivity")):
+            return
+    except Exception:
+        pass
+
+    def _is_ad_activity():
+        """Kiểm tra AdActivity có đang chạy không bằng ADB (uiautomator dump crash khi AdActivity)."""
+        try:
+            _, out, _ = adb._run(["shell", "dumpsys", "activity", "activities"])
+            return "gms.ads.AdActivity" in (out or "")
+        except Exception:
+            return False
+
+    # Phase 1: Thử ADB dump tìm text button (chỉ hoạt động khi KHÔNG phải AdActivity)
+    # Nếu đang là AdActivity, uiautomator dump bị kill → bỏ qua, chuyển thẳng Phase 2
+    if not _is_ad_activity():
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            root = _adb_dump()
+            if root is not None:
+                if _reader_open_adb(root):
+                    wait_uia2_ready(driver, timeout=40)
+                    return
+                center = _find_center(root, _DISMISS_TEXTS)
+                if center:
+                    adb._run(["shell", "input", "tap", str(center[0]), str(center[1])])
+                    time.sleep(3)
+                    break
+            time.sleep(2)
+
+    # Phase 2: Tap tọa độ cố định liên tục cho đến khi reader mở (tối đa 150s)
+    # AdActivity (com.google.android.gms.ads.AdActivity): nút X ở góc trên-phải (~89%, ~4.5%)
+    # App Open Ad overlay: "Continue to app >" (~75%, ~13.5%) hoặc (~96%, ~10.6%)
+    # uiautomator dump không hoạt động khi AdActivity → phải dùng tap tọa độ thuần ADB.
+    # Gửi heartbeat Appium mỗi 60s để giữ session (new_command_timeout=120s).
+    root = _adb_dump()
+    if root is None or not _reader_open_adb(root):
+        w, h = _get_screen_size()
+        _tap_positions = [
+            (int(w * 0.89), int(h * 0.045)),  # AdActivity X button (top-right ~961, ~108)
+            (int(w * 0.75), int(h * 0.135)),  # App Open Ad "Continue to app >" bar
+            (int(w * 0.96), int(h * 0.106)),  # App Open Ad alternative position
+        ]
+        phase2_deadline = time.time() + 150
+        _tap_idx = 0
+        _last_heartbeat = time.time()
+        while time.time() < phase2_deadline:
+            x, y = _tap_positions[_tap_idx % len(_tap_positions)]
+            adb._run(["shell", "input", "tap", str(x), str(y)])
+            _tap_idx += 1
+            time.sleep(4)
+            # Heartbeat Appium mỗi 60s để không bị new_command_timeout
+            if time.time() - _last_heartbeat >= 60:
+                try:
+                    driver.current_activity  # lightweight, an toàn kể cả khi ad đang show
+                    _last_heartbeat = time.time()
+                except Exception:
+                    pass
+            # Nếu AdActivity đã đóng → thoát loop (dùng dumpsys, không dùng uiautomator)
+            if not _is_ad_activity():
+                root = _adb_dump()
+                if root is None or _reader_open_adb(root):
+                    break
+
+    # Cho Appium UiAutomator2 recover sau ad dismiss
+    wait_uia2_ready(driver, timeout=40)
 
 
 def _open_via_intent(adb, uri: str, mime: str, component: str = None):
@@ -110,68 +210,206 @@ def _open_via_intent(adb, uri: str, mime: str, component: str = None):
     component: "pkg/.ui.main.XxxActivity" để target activity cụ thể.
     """
     cmd = ["shell", "am", "start", "-a", "android.intent.action.VIEW",
-           "-t", mime, "-d", uri]
+           "-t", mime, "-d", uri, "--grant-read-uri-permission"]
     if component:
         cmd += ["-n", component]
     adb._run(cmd)
     time.sleep(5)
 
 
-def _handle_chooser(driver, pkg: str, option_text: str = None):
+def _handle_chooser(adb, driver, option_text: str = None):
     """
-    Xử lý Android 'Open with' chooser nếu xuất hiện.
-    option_text: text của option cần chọn trong chooser (vd: "Note To File", "Mark Favourite").
-                 Nếu None thì chọn app PDF Reader (mặc định).
+    Xử lý Android 'Open with' chooser bằng ADB thuần (bypass UiAutomator2).
+
+    Dùng 'adb uiautomator dump' để lấy UI hierarchy từ system process mà không
+    cần UiAutomator2 (tránh crash khi ResolverActivity/ChooserActivity đang mở),
+    sau đó parse XML tìm tọa độ button và dùng 'adb input tap'.
+
+    option_text: text của option cần tap trước (vd: "Note To File", "Mark Favourite").
+                 Nếu None thì tap "Just once" / "Only this time" trực tiếp.
     """
-    try:
-        if option_text:
-            # Tìm theo text hoặc content-desc
-            chooser_xpath = (
-                f'//*[contains(@text,"{option_text}")]'
-                f' | //*[contains(@content-desc,"{option_text}")]'
+    import xml.etree.ElementTree as ET
+    import re as _re
+
+    _JUST_ONCE_TEXTS = {"Just once", "Only this time"}
+
+    def _dump_and_parse(timeout_sec=15):
+        """Dump UI và trả về root Element, hoặc None nếu thất bại.
+        Thử --windows trước để capture system overlay (chooser); fallback không có flag."""
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            for extra in [["--windows"], []]:
+                try:
+                    adb._run(["shell", "uiautomator", "dump"] + extra + ["/sdcard/uidump.xml"])
+                    _, stdout, _ = adb._run(["shell", "cat", "/sdcard/uidump.xml"])
+                    if stdout and "<hierarchy" in stdout:
+                        root = ET.fromstring(stdout)
+                        # Ưu tiên kết quả có chứa "Just once" / "Only this time"
+                        has_target = any(
+                            node.get("text", "") in ("Just once", "Only this time")
+                            or node.get("content-desc", "") in ("Just once", "Only this time")
+                            for node in root.iter("node")
+                        )
+                        if has_target:
+                            return root
+                        # Lưu root không-có-target để dùng nếu cả hai đều không có
+                        _last = root
+                except Exception:
+                    _last = None
+                    continue
+            # Nếu không tìm thấy target trong cả hai lần dump, trả root từ dump cuối
+            try:
+                if _last is not None:
+                    return _last
+            except Exception:
+                pass
+            time.sleep(1)
+        return None
+
+    def _bounds_center(bounds_str):
+        """Parse '[x1,y1][x2,y2]' → (cx, cy)."""
+        nums = _re.findall(r"\d+", bounds_str)
+        if len(nums) >= 4:
+            return (int(nums[0]) + int(nums[2])) // 2, (int(nums[1]) + int(nums[3])) // 2
+        return None
+
+    def _tap_node_by_text(root, texts, partial=False):
+        """Tìm node theo text và tap. Trả về True nếu thành công."""
+        for node in root.iter("node"):
+            node_text = node.get("text", "")
+            node_desc = node.get("content-desc", "")
+            match = any(
+                (t in node_text or t in node_desc) if partial else (node_text == t or node_desc == t)
+                for t in texts
             )
-        else:
-            # App PDF Reader — tìm theo text hoặc content-desc
-            chooser_xpath = (
-                '//*[contains(@text,"PDF") and contains(@text,"Reader")]'
-                ' | //*[contains(@text,"All Docs")]'
-                ' | //*[contains(@content-desc,"PDF") and contains(@content-desc,"Reader")]'
-                ' | //*[contains(@content-desc,"All Docs")]'
-            )
-        el = WebDriverWait(driver, 8).until(
-            EC.element_to_be_clickable((AppiumBy.XPATH, chooser_xpath))
-        )
-        el.click()
+            if match:
+                center = _bounds_center(node.get("bounds", ""))
+                if center:
+                    adb._run(["shell", "input", "tap", str(center[0]), str(center[1])])
+                    return True
+        return False
+
+    # Bước 1: Nếu cần chọn option cụ thể (vd: "Note To File"), tap option đó trước
+    if option_text:
+        root = _dump_and_parse(timeout_sec=15)
+        if root is None:
+            return
+        tapped = _tap_node_by_text(root, [option_text], partial=True)
+        if not tapped:
+            # Thử scroll resolver_list rồi dump lại
+            try:
+                _, stdout, _ = adb._run(["shell", "wm", "size"])
+                m = _re.search(r"(\d+)x(\d+)", stdout)
+                if m:
+                    w, h = int(m.group(1)), int(m.group(2))
+                    adb._run(["shell", "input", "swipe",
+                               str(w // 2), str(int(h * 0.7)),
+                               str(w // 2), str(int(h * 0.3)), "400"])
+                    time.sleep(0.8)
+            except Exception:
+                pass
+            root = _dump_and_parse(timeout_sec=8)
+            if root is None:
+                return
+            _tap_node_by_text(root, [option_text], partial=True)
         time.sleep(1)
 
-        # Chờ và click "Just once" / "Only this time" (dùng WebDriverWait thay vì find_element)
-        just_once_xpath = (
-            '//*[@text="Just once"]'
-            ' | //*[@text="Only this time"]'
-            ' | //*[contains(@text,"Just once")]'
-            ' | //*[contains(@text,"Only this time")]'
-            ' | //*[contains(@content-desc,"Just once")]'
-        )
-        try:
-            btn = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((AppiumBy.XPATH, just_once_xpath))
-            )
-            btn.click()
+    # Bước 2: Tap "Just once" / "Only this time"
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        root = _dump_and_parse(timeout_sec=5)
+        if root is not None and _tap_node_by_text(root, _JUST_ONCE_TEXTS, partial=False):
             time.sleep(2)
+            # Chờ UiAutomator2 recover (Appium tự restart sau khi nhận lệnh đầu tiên)
+            wait_uia2_ready(driver, timeout=40)
+            return
+
+        # Fallback: dùng Appium UiAutomator2 để tìm "Just once" (system overlay)
+        try:
+            for text in _JUST_ONCE_TEXTS:
+                try:
+                    el = driver.find_element(
+                        AppiumBy.ANDROID_UIAUTOMATOR,
+                        f'new UiSelector().text("{text}")'
+                    )
+                    el.click()
+                    time.sleep(2)
+                    wait_uia2_ready(driver, timeout=40)
+                    return
+                except Exception:
+                    pass
         except Exception:
             pass
-    except Exception:
-        pass
+
+        time.sleep(1)
 
 
 def _wait_reader_open(driver, timeout=20) -> bool:
-    """Chờ màn đọc file mở (toolbar back hoặc doc_view)."""
+    """
+    Chờ màn đọc file mở (toolbar back hoặc doc_view).
+    is_visible đã bắt mọi Exception (kể cả UiAutomator2 crash) → trả False khi crash.
+    Tiếp tục polling để Appium có thể restart UiAutomator2.
+    """
+    import os
+    import re
+    import subprocess
+
+    def _focused_activity_via_dumpsys() -> str:
+        """
+        Lấy activity đang focus bằng `adb shell dumpsys window windows`.
+        Trả về chuỗi dạng: "pkg/.Activity" hoặc "" nếu không đọc được.
+        """
+        serial = os.environ.get("TEST_DEVICE_SERIAL", "")
+        adb_prefix = ["adb", "-s", serial] if serial else ["adb"]
+        try:
+            r = subprocess.run(
+                adb_prefix + ["shell", "dumpsys", "window", "windows"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            out = (r.stdout or "") + "\n" + (r.stderr or "")
+        except Exception:
+            return ""
+
+        # Android versions/ROMs khác nhau: mCurrentFocus hoặc mFocusedApp
+        m = re.search(r"mCurrentFocus=Window\{[^}]*\s([\w\.]+)/(\S+)\}", out)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}"
+        m = re.search(r"mFocusedApp=AppWindowToken\{[^}]*\s([\w\.]+)/(\S+)\}", out)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}"
+        return ""
+
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if is_visible(driver, "imv_toolbar_back", timeout=2):
-            return True
-        if is_visible(driver, "doc_view", timeout=2):
-            return True
+        try:
+            if is_visible(driver, "imv_toolbar_back", timeout=2):
+                return True
+            if is_visible(driver, "doc_view", timeout=2):
+                return True
+            # Fallback: một số màn reader hiển thị toolbar khác nhưng vẫn là reader
+            if is_visible(driver, "imv_toolbar_star", timeout=2):
+                return True
+        except Exception:
+            pass
+        # Fallback nhẹ: activity (tránh page_source)
+        try:
+            act = driver.current_activity or ""
+            if any(k in act for k in ["Reader", "DocReader", "PdfReader"]):
+                return True
+        except Exception:
+            pass
+        # Fallback mạnh: focused activity bằng dumpsys (không phụ thuộc UiAutomator2 tree)
+        try:
+            focused = _focused_activity_via_dumpsys()
+            print(f"{focused}")
+            if focused:
+                f = focused.lower()
+                if PKG.lower() in f and any(k in f for k in ["reader", "docreader", "pdfreader"]):
+                    return True
+        except Exception:
+            pass
         time.sleep(1)
     return False
 
@@ -399,13 +637,20 @@ class TestOpenFilesOther:
     """TC-026 đến TC-040: Mở file từ app khác và từ trong app với các action khác nhau."""
 
     @pytest.fixture(autouse=True)
-    def setup_teardown(self, driver, adb, cfg):
+    def setup_teardown(self, driver, adb, cfg, request):
         """Setup: về home, dismiss ads. Teardown: xóa file test."""
+        # Các test mở file từ app khác (TC017-020) không cần launch app PDF trước
+        no_app_launch = request.node.get_closest_marker("no_app_launch") is not None
         try:
-            if _is_ad_showing(driver):
-                dismiss_ads(driver)
+            if no_app_launch:
+                # Chỉ về Android Home, không launch app PDF
+                driver.press_keycode(3)
                 time.sleep(1)
-            go_to_home(driver, cfg)
+            # else:
+            #     if _is_ad_showing(driver):
+            #         dismiss_ads(driver)
+            #         time.sleep(1)
+            #     go_to_home(driver, cfg)
         except Exception as e:
             if "instrumentation process is not running" in str(e):
                 # UiAutomator2 crashed — dùng ADB thuần để về Home
@@ -605,7 +850,7 @@ class TestOpenFilesOther:
         _push(adb, "sample.epub", REMOTE_EPUB_PATH)
 
         _open_via_intent(adb, f"file://{REMOTE_EPUB_PATH}", MIME_EPUB)
-        _handle_chooser(driver, PKG)
+        _handle_chooser(adb, driver)
 
         if _is_ad_showing(driver):
             dismiss_ads(driver)
@@ -1631,8 +1876,24 @@ class TestOpenFilesOther:
         print(f"\n  TC-054 PASS: {len(available)} định dạng text mở thành công bằng text editor")
 
     # ── TC-017: Doc/Docx từ app khác — basic open ──────────────────────────
+    def _clear_recent_apps(self, adb):
+        """
+        Mở Recent Apps rồi vuốt từ giữa màn hình lên trên 10 lần để đóng tất cả app.
+        Dùng ADB input để không phụ thuộc UiAutomator2.
+        """
 
+        # Mở Recent Apps (KEYCODE_APP_SWITCH = 187)
+        adb._run(["shell", "input", "keyevent", "187"])
+        time.sleep(2)
+
+        # Vuốt từ giữa lên trên 3 lần để dismiss từng app
+        for _ in range(3):
+            adb._run(["shell", "input", "swipe", "540", "1200", "540", "200", "300"])
+            time.sleep(0.3)
+
+        time.sleep(0.5)
     @pytest.mark.tc_id("TC-017")
+    @pytest.mark.no_app_launch
     def test_tc017_docx_open_from_external(self, driver, adb, cfg):
         """
         TC-017: Mở file Doc/Docx từ app khác
@@ -1643,20 +1904,39 @@ class TestOpenFilesOther:
         if not os.path.exists(_res("sample.docx")):
             pytest.skip("Không có sample.docx để test")
 
-        _push(adb, "sample.docx", REMOTE_DOCX_PATH)
+        # Close recent app state: mở Recent Apps và vuốt dismiss, sau đó force-stop app
+        # Yêu cầu test: close recent app → rồi mới chạy intent mở file DOCX từ app khác
+        self._clear_recent_apps(adb)
+        try:
+            adb._run(["shell", "input", "keyevent", "KEYCODE_HOME"])
+            time.sleep(1)
+        except Exception:
+            pass
 
-        # Đảm bảo đang ở màn hình Home trước khi mở file từ app khác
-        driver.press_keycode(3)  # KEYCODE_HOME
-        time.sleep(1)
+        _push(adb, "sample.docx", REMOTE_DOCX_PATH)
 
         # Không chỉ định component để trigger Android chooser
         _open_via_intent(adb, f"file://{REMOTE_DOCX_PATH}", MIME_DOCX)
 
-        # Chọn app PDF Reader trong chooser + "Just once"
-        _handle_chooser(driver, PKG)
+        # Tap "Just once" trong chooser (không chỉ định option để tránh mở sai activity)
+        _handle_chooser(adb, driver)
 
+        # Yêu cầu test: nếu không có ads → TC FAIL
+        # Kiểm tra 5 lần, mỗi lần cách nhau 2s trước khi kết luận không có ads
+        has_ad = False
+        for _ in range(5):
+            if _is_ad_showing(driver):
+                has_ad = True
+                break
+            time.sleep(3)
+        assert has_ad, "Không hiển thị ads sau khi mở DOCX từ app khác (expected ads)"
+
+        # Có ads → đóng ads
         _safe_dismiss_open_app_ad(driver, adb)
+        time.sleep(1)
 
+        # Flow đúng: intent → File Chooser hệ thống → chọn app → Just once →
+        # dismiss ads → reader mở trực tiếp (KHÔNG qua File selection nội bộ).
         reader_open = _wait_reader_open(driver, timeout=25)
         assert reader_open, "Reader không mở sau khi mở Doc/Docx từ app khác"
 
@@ -1665,6 +1945,7 @@ class TestOpenFilesOther:
     # ── TC-018: Doc/Docx + Mark Favourite ─────────────────────────────────
 
     @pytest.mark.tc_id("TC-018")
+    @pytest.mark.no_app_launch
     def test_tc018_docx_mark_favourite(self, driver, adb, cfg):
         """
         TC-018: Mở file Doc/Docx từ app khác → bấm nút Star trong reader →
@@ -1676,13 +1957,9 @@ class TestOpenFilesOther:
 
         _push(adb, "sample.docx", REMOTE_DOCX_PATH)
 
-        # Đảm bảo đang ở màn hình Home trước khi mở file từ app khác
-        driver.press_keycode(3)  # KEYCODE_HOME
-        time.sleep(1)
-
         # Mở file qua intent (chooser → chọn PDF Reader → Just once)
         _open_via_intent(adb, f"file://{REMOTE_DOCX_PATH}", MIME_DOCX)
-        _handle_chooser(driver, PKG)
+        _handle_chooser(adb, driver)
         _safe_dismiss_open_app_ad(driver, adb)
 
         reader_open = _wait_reader_open(driver, timeout=25)
@@ -1707,9 +1984,10 @@ class TestOpenFilesOther:
     # ── TC-019: Doc/Docx + Note to File ───────────────────────────────────
 
     @pytest.mark.tc_id("TC-019")
+    @pytest.mark.no_app_launch
     def test_tc019_docx_note_to_file(self, driver, adb, cfg):
         """
-        TC-019: Mở file Doc/Docx từ app khác → chooser hiện → chọn 'Note To File' →
+        TC-019: Mở file Doc/Docx từ app khác → chooser → chọn 'Note To File' →
                 dismiss ads → reader mở + note popup hiện
         Expected: Reader mở + note popup hiện + keyboard focused
         """
@@ -1718,20 +1996,12 @@ class TestOpenFilesOther:
 
         _push(adb, "sample.docx", REMOTE_DOCX_PATH)
 
-        # Đảm bảo đang ở màn hình Home trước khi mở file từ app khác
-        driver.press_keycode(3)  # KEYCODE_HOME
-        time.sleep(1)
-
-        # Không chỉ định component để trigger Android chooser
         _open_via_intent(adb, f"file://{REMOTE_DOCX_PATH}", MIME_DOCX)
-
-        # Chọn "Note To File" option trong chooser + "Just once"
-        _handle_chooser(driver, PKG, option_text="Note To File")
-
+        _handle_chooser(adb, driver, option_text="Note To File")
         _safe_dismiss_open_app_ad(driver, adb)
 
         reader_open = _wait_reader_open(driver, timeout=25)
-        assert reader_open, "Reader không mở sau khi chọn 'Note To File' trong chooser"
+        assert reader_open, "Reader không mở sau khi launch DocNoteActivity với DOCX"
 
         note_popup = _is_note_popup_visible(driver, timeout=15)
         assert note_popup, "Note popup không hiển thị sau khi mở DOCX với Note to File"
@@ -1744,6 +2014,7 @@ class TestOpenFilesOther:
     # ── TC-020: Excel từ app khác — basic open ─────────────────────────────
 
     @pytest.mark.tc_id("TC-020")
+    @pytest.mark.no_app_launch
     def test_tc020_xlsx_open_from_external(self, driver, adb, cfg):
         """
         TC-020: Mở file Excel (xlsx/xls) từ app khác
@@ -1756,18 +2027,16 @@ class TestOpenFilesOther:
 
         _push(adb, "sample.xlsx", REMOTE_XLSX_PATH)
 
-        # Đảm bảo đang ở màn hình Home trước khi mở file từ app khác
-        driver.press_keycode(3)  # KEYCODE_HOME
-        time.sleep(1)
-
         # Không chỉ định component để trigger Android chooser
         _open_via_intent(adb, f"file://{REMOTE_XLSX_PATH}", MIME_XLSX)
 
         # Chọn app PDF Reader trong chooser + "Just once"
-        _handle_chooser(driver, PKG)
+        _handle_chooser(adb, driver)
 
         _safe_dismiss_open_app_ad(driver, adb)
 
+        # Flow đúng: intent → File Chooser hệ thống → chọn app → Just once →
+        # dismiss ads → reader mở trực tiếp (KHÔNG qua File selection nội bộ).
         reader_open = _wait_reader_open(driver, timeout=25)
         assert reader_open, "Reader không mở sau khi mở Excel từ app khác"
 
@@ -2064,13 +2333,17 @@ class TestWelcomeAndSelection:
     @pytest.fixture(autouse=True)
     def setup_teardown(self, driver, adb, cfg):
         """Setup: về home. Teardown: về home (TC-014+ không cần fresh install)."""
-        _safe_dismiss_open_app_ad(driver, adb)
-        go_to_home(driver, cfg)
+        # _safe_dismiss_open_app_ad(driver, adb)
+        # go_to_home(driver, cfg)
+        driver.press_keycode(3)
+        time.sleep(1)
         yield
         # Teardown: về home, không cần reinstall/pm clear vì TC tiếp theo tự setup state
         try:
-            _safe_dismiss_open_app_ad(driver, adb)
-            go_to_home(driver, cfg)
+            # _safe_dismiss_open_app_ad(driver, adb)
+            # go_to_home(driver, cfg)
+            driver.press_keycode(3)
+            time.sleep(1)
         except Exception:
             pass
 

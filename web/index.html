@@ -430,6 +430,9 @@ select option { background: var(--surface); }
     <!-- Run bar -->
     <div id="tc-run-bar">
       <select id="tc-device-select"><option value="">-- Chọn device --</option></select>
+      <select id="tc-apk-select" title="APK sẽ được cài trước khi chạy test">
+        <option value="">-- Không cài APK --</option>
+      </select>
       <span id="tc-selected-count">Chưa chọn TC nào</span>
       <button class="btn btn-primary" id="btn-tc-start" onclick="runSelectedTc()">▶ Chạy TC đã chọn</button>
       <button class="btn btn-danger"  id="btn-tc-stop"  onclick="stopTcRun()" disabled>■ Stop</button>
@@ -712,8 +715,12 @@ async function startRun() {
   const checkedTc   = [...document.querySelectorAll('.tc-cb:checked')].map(c => c.value);
   const checkedApks = [...document.querySelectorAll('.apk-cb:checked')].map(c => c.value);
 
-  if (!device)         { toast('Chọn device trước', 'err');               return; }
-  if (!checkedTc.length) { toast('Chọn ít nhất 1 test case', 'err');     return; }
+  if (!device)           { toast('Chọn device trước', 'err');           return; }
+  if (!checkedTc.length) { toast('Chọn ít nhất 1 test case', 'err');   return; }
+
+  // Hiện dialog hỏi có muốn chạy bước khởi tạo app không
+  const runInit = await showInitDialog();
+  if (runInit === null) return; // user bấm Cancel
 
   if (_sse) { _sse.close(); _sse = null; }
   clearConsole();
@@ -721,7 +728,7 @@ async function startRun() {
   const r = await fetch('/api/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ device, scripts: checkedTc, install_apks: checkedApks }),
+    body: JSON.stringify({ device, scripts: checkedTc, install_apks: checkedApks, run_init: runInit }),
   });
   const d = await r.json();
   if (!d.ok) { toast(d.error || 'Không thể bắt đầu', 'err'); return; }
@@ -743,6 +750,64 @@ async function startRun() {
     }
   };
   _sse.onerror = () => { if (_running) { setRunning(false); appendLog('[SSE disconnected]'); } };
+}
+
+/**
+ * Hiện dialog hỏi có muốn chạy bước khởi tạo app không.
+ * Trả về: true = có, false = không, null = Cancel (đóng dialog)
+ */
+function showInitDialog() {
+  return new Promise(resolve => {
+    // Xoá dialog cũ nếu có
+    const existing = document.getElementById('init-dialog-overlay');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'init-dialog-overlay';
+    overlay.style.cssText = `
+      position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;
+      display:flex;align-items:center;justify-content:center;
+    `;
+
+    overlay.innerHTML = `
+      <div style="
+        background:var(--surface,#1e293b);border:1px solid var(--border,#334155);
+        border-radius:12px;padding:28px 32px;max-width:420px;width:90%;
+        box-shadow:0 8px 32px rgba(0,0,0,.5);
+      ">
+        <div style="font-size:16px;font-weight:600;margin-bottom:8px;">Khởi tạo App</div>
+        <div style="font-size:13px;color:var(--muted,#94a3b8);line-height:1.6;margin-bottom:24px;">
+          Bạn có muốn chạy bước <strong>khởi tạo app</strong> trước khi test không?<br><br>
+          Bước này sẽ:<br>
+          • Mở app lần đầu<br>
+          • Dismiss ads, chọn ngôn ngữ<br>
+          • Cấp quyền đọc file &amp; thông báo<br>
+          • Đóng app sau khi thiết lập xong
+        </div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;">
+          <button id="init-dlg-cancel" style="
+            padding:8px 18px;border-radius:7px;border:1px solid var(--border,#334155);
+            background:transparent;color:var(--text,#e2e8f0);cursor:pointer;font-size:13px;
+          ">Huỷ</button>
+          <button id="init-dlg-no" style="
+            padding:8px 18px;border-radius:7px;border:1px solid var(--border,#334155);
+            background:transparent;color:var(--text,#e2e8f0);cursor:pointer;font-size:13px;
+          ">Không</button>
+          <button id="init-dlg-yes" style="
+            padding:8px 18px;border-radius:7px;border:none;
+            background:var(--blue,#3b82f6);color:#fff;cursor:pointer;font-size:13px;font-weight:600;
+          ">Có, chạy khởi tạo</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    document.getElementById('init-dlg-yes').onclick    = () => { overlay.remove(); resolve(true);  };
+    document.getElementById('init-dlg-no').onclick     = () => { overlay.remove(); resolve(false); };
+    document.getElementById('init-dlg-cancel').onclick = () => { overlay.remove(); resolve(null);  };
+    overlay.addEventListener('click', e => { if (e.target === overlay) { overlay.remove(); resolve(null); } });
+  });
 }
 
 async function stopRun() {
@@ -798,12 +863,27 @@ const _TC_STATUS_STYLE = {
   'NEED CONFIRM': 'background:rgba(168,85,247,.15);color:#a855f7;',
 };
 
+async function _loadTcApks() {
+  const sel = document.getElementById('tc-apk-select');
+  try {
+    const r = await fetch('/api/apks');
+    const apks = await r.json();
+    if (!Array.isArray(apks) || apks.error) { return; }
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">-- Không cài APK --</option>' +
+      apks.map(a => `<option value="${a.filename}">${a.filename}${a.version_name ? ' · v' + a.version_name : ''}</option>`).join('');
+    // Giữ lại lựa chọn cũ nếu APK vẫn còn trong danh sách
+    if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+  } catch(_) {}
+}
+
 async function loadTestcases() {
   const tbody   = document.getElementById('tc-table-body');
   const dbCount = document.getElementById('tc-db-count');
   tbody.innerHTML = '<tr><td colspan="6" class="empty">Đang tải...</td></tr>';
   dbCount.textContent = 'Đang tải...';
   _loadTcDevices();
+  _loadTcApks();
   try {
     const r = await fetch('/api/testcases');
     _allTc = await r.json();
@@ -903,21 +983,20 @@ async function runSelectedTc() {
   const deviceLabel = deviceOpt ? deviceOpt.text : device;
   document.getElementById('run-device-info').textContent = deviceLabel;
 
-  // APK info from loaded apks list
-  try {
-    const ar = await fetch('/api/apks');
-    const apkList = await ar.json();
-    const apkText = apkList.length
-      ? apkList.map(a => `v${a.version_name} (${a.filename})`).join('<br>')
-      : '—';
-    document.getElementById('run-apk-info').innerHTML = apkText;
-  } catch(_) { document.getElementById('run-apk-info').textContent = '—'; }
+  // Lấy APK đã chọn trong dropdown (không cài nếu chọn "-- Không cài APK --")
+  const selectedApk = document.getElementById('tc-apk-select').value;
+  const apkFilenames = selectedApk ? [selectedApk] : [];
+  document.getElementById('run-apk-info').textContent = selectedApk || '—';
 
   // TC list
   document.getElementById('run-tc-count').textContent = `(${selectedIds.length})`;
   document.getElementById('run-tc-info').innerHTML = selectedIds
     .map(id => `<span class="mono" style="font-size:11px;">${id}</span>`).join('<br>');
   document.getElementById('run-meta').textContent = `Đang chạy ${selectedIds.length} TC trên ${deviceLabel}`;
+
+  // Hỏi có muốn chạy bước khởi tạo app không
+  const runInit = await showInitDialog();
+  if (runInit === null) return; // user bấm Huỷ
 
   // Switch to Run tab
   switchTab('run');
@@ -927,9 +1006,11 @@ async function runSelectedTc() {
   document.getElementById('run-open-report').style.display = 'none';
   if (_sse) { _sse.close(); _sse = null; }
   appendLog(`[INFO] Chạy ${nodeIds.length}/${selectedIds.length} TC (${selectedIds.length - nodeIds.length} manual bị bỏ qua)`);
+  if (apkFilenames.length) appendLog(`[INFO] Sẽ cài ${apkFilenames.length} APK: ${apkFilenames.join(', ')}`);
+  if (runInit) appendLog('[INFO] Sẽ chạy bước khởi tạo app trước khi test');
   const r = await fetch('/api/run', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ device, scripts: nodeIds }),
+    body: JSON.stringify({ device, scripts: nodeIds, install_apks: apkFilenames, run_init: runInit }),
   });
   const d = await r.json();
   if (!d.ok) { toast(d.error || 'Không thể bắt đầu', 'err'); return; }

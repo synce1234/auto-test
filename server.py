@@ -306,6 +306,7 @@ def api_start_run():
     device_serial = data.get("device", "")
     scripts       = data.get("scripts", [])      # ["test_open_app.py::TestTC001", ...]
     install_apks  = data.get("install_apks", []) # list of filenames in apks/
+    run_init      = data.get("run_init", False)  # chạy bước khởi tạo app trước test
 
     # Build pytest args — node IDs từ _build_tc_map() là path tương đối từ BASE_DIR
     if scripts:
@@ -330,6 +331,7 @@ def api_start_run():
     cmd = [sys.executable, "-m", "pytest"] + test_paths + [
         "--rootdir", BASE_DIR,
         "-v", "--tb=short", "--no-header",
+        "-s",  # Không capture stdout để print() trong fixtures hiển thị real-time
     ]
 
     env = os.environ.copy()
@@ -339,23 +341,45 @@ def api_start_run():
     def _run_thread():
         global _run_active, _run_proc
         try:
-            # Optional: install APKs in order
+            # Optional: uninstall + install APKs in order
+            pkg_name = CFG.get("app", {}).get("package_name", "")
             for apk_fname in install_apks:
                 apk_path = os.path.join(APKS_DIR, _safe_apk_name(apk_fname))
                 if not os.path.isfile(apk_path):
                     _emit({"type": "log", "text": f"[INSTALL] SKIP (not found): {apk_fname}"})
                     continue
-                _emit({"type": "log", "text": f"[INSTALL] Installing {apk_fname}..."})
-                adb_cmd = ["adb"]
+
+                adb_prefix = ["adb"]
                 if device_serial:
-                    adb_cmd += ["-s", device_serial]
-                adb_cmd += ["install", "-r", apk_path]
-                r = subprocess.run(adb_cmd, capture_output=True, text=True, timeout=120)
+                    adb_prefix += ["-s", device_serial]
+
+                # Bước 1: Gỡ APK hiện tại
+                if pkg_name:
+                    _emit({"type": "log", "text": f"[UNINSTALL] Gỡ {pkg_name}..."})
+                    r_un = subprocess.run(
+                        adb_prefix + ["uninstall", pkg_name],
+                        capture_output=True, text=True, timeout=60
+                    )
+                    un_out = (r_un.stdout + r_un.stderr).strip()
+                    _emit({"type": "log", "text": f"[UNINSTALL] {un_out or 'done'}"})
+
+                # Bước 2: Cài APK mới
+                _emit({"type": "log", "text": f"[INSTALL] Cài {apk_fname}..."})
+                r = subprocess.run(
+                    adb_prefix + ["install", apk_path],
+                    capture_output=True, text=True, timeout=120
+                )
                 ok = r.returncode == 0 and "Success" in r.stdout
                 _emit({"type": "log", "text": f"[INSTALL] {'OK ✓' if ok else 'FAILED ✗'} {r.stdout.strip() or r.stderr.strip()}"})
                 if not ok:
                     _emit({"type": "done", "code": 1})
                     return
+
+            # Truyền RUN_INIT vào env để conftest.py xử lý trong cùng Appium session
+            if run_init:
+                env["RUN_INIT"] = "1"
+                _emit({"type": "log", "text": "[INIT] Bước khởi tạo app sẽ chạy trước test case đầu tiên"})
+                _emit({"type": "log", "text": ""})
 
             # Run pytest
             _emit({"type": "log", "text": f"[CMD] {' '.join(cmd)}"})

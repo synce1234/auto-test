@@ -56,8 +56,24 @@ def is_visible(driver, resource_id: str, timeout: int = 5) -> bool:
     try:
         find(driver, resource_id, timeout=timeout)
         return True
-    except (TimeoutException, NoSuchElementException):
+    except Exception:
         return False
+
+
+def wait_uia2_ready(driver, timeout: int = 40) -> bool:
+    """
+    Chờ UiAutomator2 responsive sau khi crash (vd: sau khi File Chooser đóng).
+    Appium tự restart UiAutomator2 khi nhận lệnh đầu tiên sau crash.
+    Poll driver.current_activity cho đến khi thành công.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            driver.current_activity
+            return True
+        except Exception:
+            time.sleep(2)
+    return False
 
 
 def wait_for_activity(driver, activity_substr: str, timeout: int = 15) -> bool:
@@ -218,7 +234,7 @@ def go_to_home(driver, cfg: dict):
     """Navigate về màn hình Home. Dismiss ad, onboarding và re-launch app nếu cần."""
     ensure_app_foreground(driver, cfg)
 
-    for _ in range(10):
+    for _ in range(5):
         # Dismiss ad nếu đang show
         if _is_ad_showing(driver):
             _safe_dismiss_open_app_ad(driver)
@@ -290,34 +306,51 @@ def dismiss_onboarding(driver, cfg: dict):
 
     while time.time() < deadline:
 
-        # 0. Đảm bảo app ở foreground
+        # Lấy current package một lần dùng cho nhiều bước
         try:
-            if driver.current_package != pkg:
-                driver.activate_app(pkg)
-                time.sleep(3)
+            current_pkg = driver.current_package or ""
         except Exception:
-            pass
+            current_pkg = ""
 
-        # 1. Đã ở home → xong
-        if is_visible(driver, "rcv_all_file", timeout=2):
-            return True
-
-        # 2. Open App Ad ("Continue to app" hoặc nút X)
-        if _is_ad_showing(driver):
-            _safe_dismiss_open_app_ad(driver)
+        # 0. Đang ở Settings → xử lý ngay, không chạy qua các bước app UI
+        if "com.android.settings" in current_pkg or "com.google.android.permissioncontroller" in current_pkg:
+            # "Allow access to manage all files" toggle
+            try:
+                toggle = driver.find_element(
+                    AppiumBy.XPATH,
+                    '//*[contains(@text,"manage all files") or contains(@text,"Allow access")]',
+                )
+                toggle.click()
+                time.sleep(1)
+                driver.back()
+                time.sleep(1)
+                continue
+            except Exception:
+                pass
+            # System permission dialog "Allow" button
+            try:
+                allow = driver.find_element(
+                    AppiumBy.XPATH,
+                    '//*[@resource-id="com.android.permissioncontroller:id/permission_allow_button"]'
+                    ' | //*[@text="Allow" and @class="android.widget.Button"]'
+                    ' | //*[@text="Allow all the time"]'
+                    ' | //*[@text="While using the app"]',
+                )
+                allow.click()
+                time.sleep(1)
+                try:
+                    driver.activate_app(pkg)
+                    time.sleep(1)
+                except Exception:
+                    pass
+                continue
+            except Exception:
+                pass
             time.sleep(1)
             continue
 
-        # 3. Language screen → click nút ✓ (btn_continue)
-        if is_visible(driver, "btn_continue", timeout=2):
-            find(driver, "btn_continue").click()
-            time.sleep(2)
-            continue
-
-        # 4. App permission dialog (btnDialogConfirm = "Allow" của app)
-        if is_visible(driver, "btnDialogConfirm", timeout=2):
-            find(driver, "btnDialogConfirm").click()
-            time.sleep(2)
+        # 1. Đảm bảo app ở foreground (chỉ khi không ở Settings)
+        if current_pkg != pkg:
             try:
                 driver.activate_app(pkg)
                 time.sleep(2)
@@ -325,7 +358,53 @@ def dismiss_onboarding(driver, cfg: dict):
                 pass
             continue
 
-        # 5. System permission dialog — "Allow" button
+        # 2. Đã ở home → xong
+        if is_visible(driver, "rcv_all_file", timeout=2):
+            return True
+
+        # 3. Language screen → click nút ✓ (btn_continue)
+        if is_visible(driver, "btn_continue", timeout=2):
+            find(driver, "btn_continue").click()
+            time.sleep(2)
+            continue
+
+        # 4. App in-app permission dialog (btnDialogConfirm hoặc button "Allow"/"Grant")
+        #    Kiểm tra trước dismiss_ads để tránh fallback tap của ads làm nhiễu
+        _app_allow_clicked = False
+        try:
+            allow_el = driver.find_element(AppiumBy.ID, rid("btnDialogConfirm"))
+            allow_el.click()
+            _app_allow_clicked = True
+        except Exception:
+            pass
+        if not _app_allow_clicked:
+            try:
+                allow_el = driver.find_element(
+                    AppiumBy.XPATH,
+                    f'//*[@package="{pkg}" and ('
+                    '@text="Allow" or @text="Grant" or @text="OK"'
+                    ' or contains(@text,"Allow") or contains(@text,"Grant")'
+                    ')]',
+                )
+                allow_el.click()
+                _app_allow_clicked = True
+            except Exception:
+                pass
+        if _app_allow_clicked:
+            time.sleep(1)
+            try:
+                driver.activate_app(pkg)
+                time.sleep(1)
+            except Exception:
+                pass
+            continue
+
+        # 5. Open App Ad (sau khi đã xử lý dialog app để tránh nhầm lẫn)
+        if dismiss_ads(driver):
+            time.sleep(1)
+            continue
+
+        # 6. System permission dialog — "Allow" button
         try:
             allow = driver.find_element(
                 AppiumBy.XPATH,
@@ -335,26 +414,12 @@ def dismiss_onboarding(driver, cfg: dict):
                 ' | //*[@text="While using the app"]',
             )
             allow.click()
-            time.sleep(2)
+            time.sleep(1)
             try:
                 driver.activate_app(pkg)
-                time.sleep(2)
+                time.sleep(1)
             except Exception:
                 pass
-            continue
-        except Exception:
-            pass
-
-        # 6. "Allow access to manage all files" toggle (Settings page)
-        try:
-            toggle = driver.find_element(
-                AppiumBy.XPATH,
-                '//*[contains(@text,"manage all files") or contains(@text,"Allow access")]',
-            )
-            toggle.click()
-            time.sleep(2)
-            driver.back()
-            time.sleep(1)
             continue
         except Exception:
             pass
@@ -362,3 +427,43 @@ def dismiss_onboarding(driver, cfg: dict):
         time.sleep(1)
 
     return is_visible(driver, "rcv_all_file", timeout=5)
+
+
+def app_init(driver, cfg: dict) -> bool:
+    """
+    Khởi tạo app lần đầu sau khi cài mới:
+      1. Launch app
+      2. Bỏ qua toàn bộ onboarding (chọn ngôn ngữ, cấp quyền đọc file, quyền noti, dismiss ads)
+      3. Chờ đến khi vào được màn Home
+      4. Kill app
+
+    Gọi 1 lần duy nhất trước khi chạy test suite, sau bước cài APK.
+    Trả về True nếu onboarding hoàn thành thành công.
+    """
+    pkg = cfg["app"]["package_name"]
+
+    print("\n  [INIT] Khởi động app lần đầu để thiết lập...")
+
+    # Launch app
+    try:
+        driver.activate_app(pkg)
+        time.sleep(3)
+    except Exception:
+        pass
+
+    # Chạy dismiss_onboarding — xử lý toàn bộ luồng onboarding
+    result = dismiss_onboarding(driver, cfg)
+    print(f"  [INIT] Onboarding {'hoàn thành ✓' if result else 'timeout (tiếp tục)'}")
+
+    # Kill app sau khi onboarding xong
+    time.sleep(1)
+    try:
+        driver.terminate_app(pkg)
+        print("  [INIT] Đã kill app ✓")
+    except Exception:
+        import subprocess as _sp
+        _sp.run(["adb", "shell", "am", "force-stop", pkg], capture_output=True)
+        print("  [INIT] Đã kill app (ADB) ✓")
+
+    time.sleep(1)
+    return result
