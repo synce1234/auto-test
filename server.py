@@ -335,6 +335,7 @@ def api_start_run():
     ]
 
     env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"  # flush print() ngay lập tức trong subprocess
     if device_serial:
         env["TEST_DEVICE_SERIAL"] = device_serial
 

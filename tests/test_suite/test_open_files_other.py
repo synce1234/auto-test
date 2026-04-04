@@ -640,9 +640,16 @@ def _open_file_from_home(driver, adb, cfg, filename_contains: str,
                           remote_full_path: str, timeout=15) -> bool:
     """
     Push file rồi relaunch app để app rescan file list, sau đó tìm và click file.
-    remote_full_path: đường dẫn đầy đủ trên device (vd: /sdcard/Download/sample.docx)
+    ADB-first để tránh UIA2 crash khi AppOpenAd xuất hiện sau relaunch.
     """
-    # Media scan với full path để Android nhận diện file
+    import xml.etree.ElementTree as _ET_ofh
+    import re as _re_ofh
+    import subprocess as _sp_ofh
+
+    _serial = os.environ.get("TEST_DEVICE_SERIAL", "")
+    _adb_cmd = ["adb", "-s", _serial] if _serial else ["adb"]
+
+    # Media scan
     try:
         adb._run(["shell", "am", "broadcast",
                   "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
@@ -651,7 +658,7 @@ def _open_file_from_home(driver, adb, cfg, filename_contains: str,
     except Exception:
         pass
 
-    # Relaunch app để app rescan file system và hiển thị file mới
+    # Relaunch app
     pkg = cfg["app"]["package_name"]
     try:
         adb.force_stop_app(pkg)
@@ -661,40 +668,134 @@ def _open_file_from_home(driver, adb, cfg, filename_contains: str,
     except Exception:
         pass
 
-    # Dismiss ads/onboarding nếu có
-    from tests.helpers import dismiss_onboarding, ensure_app_foreground
-    if _is_ad_showing(driver):
-        dismiss_ads(driver)
-        time.sleep(1)
-    dismiss_onboarding(driver, cfg)
-
-    # Chờ rcv_all_file xuất hiện
+    # ADB dismiss AppOpenAd nếu đang active (xuất hiện ngay sau relaunch)
     try:
-        WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located(
-                (AppiumBy.ID, rid("rcv_all_file"))
-            )
-        )
-    except TimeoutException:
-        return False
-
-    # Chuyển filter sang "All files" để hiển thị DOCX/XLSX/TXT (default là PDF)
-    _set_filter_to_all(driver)
-
-    # Thử scroll tới file
-    try:
-        driver.find_element(
-            AppiumBy.ANDROID_UIAUTOMATOR,
-            f'new UiScrollable(new UiSelector().resourceId("{rid("rcv_all_file")}").scrollable(true))'
-            f'.scrollIntoView(new UiSelector().textContains("{filename_contains}"))',
-        )
-        time.sleep(1)
+        _r = _sp_ofh.run(_adb_cmd + ["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"],
+                         capture_output=True, text=True, timeout=5)
+        if "gms.ads.AdActivity" in (_r.stdout or ""):
+            _rs = _sp_ofh.run(_adb_cmd + ["shell", "wm", "size"],
+                              capture_output=True, text=True, timeout=4)
+            _mm = _re_ofh.search(r"(\d+)x(\d+)", _rs.stdout or "")
+            _w, _h = (int(_mm.group(1)), int(_mm.group(2))) if _mm else (1080, 2400)
+            for _tx, _ty in [(int(_w * 0.89), int(_h * 0.045)),
+                              (int(_w * 0.96), int(_h * 0.106))]:
+                _sp_ofh.run(_adb_cmd + ["shell", "input", "tap", str(_tx), str(_ty)],
+                            capture_output=True)
+                time.sleep(2)
+                _r2 = _sp_ofh.run(_adb_cmd + ["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"],
+                                  capture_output=True, text=True, timeout=5)
+                if "gms.ads.AdActivity" not in (_r2.stdout or ""):
+                    break
+            wait_uia2_ready(driver, timeout=30)
     except Exception:
         pass
 
-    # Tìm và click
+    # ADB: chờ rcv_all_file xuất hiện (dump loop thay vì Appium WebDriverWait)
+    _rid_list = f"{PKG}:id/rcv_all_file"
+    _rid_file = f"{PKG}:id/vl_item_file_name"
+    _filter_rid = f"{PKG}:id/imv_filter_file"
+
+    def _adb_wait_home(wait_sec=20) -> bool:
+        _dl = time.time() + wait_sec
+        while time.time() < _dl:
+            try:
+                adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_ofh.xml"])
+                _, _xml, _ = adb._run(["shell", "cat", "/sdcard/uidump_ofh.xml"])
+                if _xml and "<hierarchy" in _xml:
+                    _root = _ET_ofh.fromstring(_xml)
+                    for _n in _root.iter("node"):
+                        if _n.get("resource-id", "") in (_rid_list, _filter_rid):
+                            return True
+            except Exception:
+                pass
+            time.sleep(1.5)
+        return False
+
+    if not _adb_wait_home(wait_sec=timeout):
+        # Fallback Appium nếu ADB dump không detect được
+        try:
+            WebDriverWait(driver, 8).until(
+                EC.presence_of_element_located((AppiumBy.ID, rid("rcv_all_file")))
+            )
+        except Exception:
+            return False
+
+    # ADB: tap filter button + chọn "All files"
+    def _adb_set_filter_all() -> bool:
+        try:
+            adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_filter.xml"])
+            _, _xml, _ = adb._run(["shell", "cat", "/sdcard/uidump_filter.xml"])
+            if not _xml or "<hierarchy" not in _xml:
+                return False
+            _root = _ET_ofh.fromstring(_xml)
+            for _n in _root.iter("node"):
+                if _n.get("resource-id", "") == _filter_rid:
+                    _nums = _re_ofh.findall(r"\d+", _n.get("bounds", ""))
+                    if len(_nums) >= 4:
+                        _cx = (int(_nums[0]) + int(_nums[2])) // 2
+                        _cy = (int(_nums[1]) + int(_nums[3])) // 2
+                        adb._run(["shell", "input", "tap", str(_cx), str(_cy)])
+                        time.sleep(1)
+                        # Dump lại để tìm "All files"
+                        adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_filter2.xml"])
+                        _, _xml2, _ = adb._run(["shell", "cat", "/sdcard/uidump_filter2.xml"])
+                        if _xml2 and "<hierarchy" in _xml2:
+                            _root2 = _ET_ofh.fromstring(_xml2)
+                            for _n2 in _root2.iter("node"):
+                                if "All files" in _n2.get("text", "") or "All Files" in _n2.get("text", ""):
+                                    _nums2 = _re_ofh.findall(r"\d+", _n2.get("bounds", ""))
+                                    if len(_nums2) >= 4:
+                                        adb._run(["shell", "input", "tap",
+                                                  str((int(_nums2[0]) + int(_nums2[2])) // 2),
+                                                  str((int(_nums2[1]) + int(_nums2[3])) // 2)])
+                                        time.sleep(1.5)
+                                        return True
+        except Exception:
+            pass
+        return False
+
+    if not _adb_set_filter_all():
+        _set_filter_to_all(driver)  # Appium fallback
+
+    # ADB: scroll + tap file (giống open_password_pdf_from_home)
     try:
-        el = WebDriverWait(driver, 8).until(
+        _, _sz, _ = adb._run(["shell", "wm", "size"])
+        _m = _re_ofh.search(r"(\d+)x(\d+)", _sz or "")
+        _sw, _sh = (int(_m.group(1)), int(_m.group(2))) if _m else (1080, 2400)
+    except Exception:
+        _sw, _sh = 1080, 2400
+
+    def _adb_find_tap() -> bool:
+        try:
+            adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_ofh2.xml"])
+            _, _xml, _ = adb._run(["shell", "cat", "/sdcard/uidump_ofh2.xml"])
+            if not _xml or "<hierarchy" not in _xml:
+                return False
+            _root = _ET_ofh.fromstring(_xml)
+            for _n in _root.iter("node"):
+                if _n.get("resource-id", "") == _rid_file and filename_contains in _n.get("text", ""):
+                    _nums = _re_ofh.findall(r"\d+", _n.get("bounds", ""))
+                    if len(_nums) >= 4:
+                        adb._run(["shell", "input", "tap",
+                                  str((int(_nums[0]) + int(_nums[2])) // 2),
+                                  str((int(_nums[1]) + int(_nums[3])) // 2)])
+                        return True
+        except Exception:
+            pass
+        return False
+
+    for _ in range(8):
+        if _adb_find_tap():
+            time.sleep(2)
+            return True
+        adb._run(["shell", "input", "swipe",
+                  str(_sw // 2), str(int(_sh * 0.75)),
+                  str(_sw // 2), str(int(_sh * 0.25)), "400"])
+        time.sleep(0.8)
+
+    # Appium fallback cuối cùng
+    try:
+        el = WebDriverWait(driver, 6).until(
             EC.element_to_be_clickable(
                 (AppiumBy.XPATH, f'//*[contains(@text, "{filename_contains}")]')
             )

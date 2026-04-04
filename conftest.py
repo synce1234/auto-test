@@ -227,6 +227,17 @@ def driver():
         run_init = os.environ.get("RUN_INIT", "0") == "1"
         if run_init:
             print("\n  [INIT] Chạy bước khởi tạo app...")
+            # Grant notification permission trước khi launch để tránh popup xin quyền trong onboarding
+            print("  [INIT] Grant POST_NOTIFICATIONS via ADB...")
+            try:
+                _r_notif = subprocess.run(
+                    (["adb", "-s", serial] if serial else ["adb"])
+                    + ["shell", "pm", "grant", pkg, "android.permission.POST_NOTIFICATIONS"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                print(f"  [INIT] POST_NOTIFICATIONS: {(_r_notif.stdout + _r_notif.stderr).strip() or 'ok'}")
+            except Exception as _e_notif:
+                print(f"  [INIT] POST_NOTIFICATIONS failed: {_e_notif}")
             print("  [INIT] Dismiss ads lần đầu launch...")
             for _ in range(3):
                 dismissed = dismiss_ads(proxy)
@@ -520,6 +531,7 @@ def setup_before_test(driver):
         pass
 
     pkg = CFG["app"]["package_name"]
+
     # Close app/home lại 1 lần nữa để đảm bảo clean state (dùng shared helper)
     try:
         close_recentapp2(driver, adb=None, pkg=pkg, home=True)
