@@ -22,6 +22,7 @@ from appium import webdriver
 from appium.options.android.uiautomator2.base import UiAutomator2Options
 from core.adb_controller import ADBController
 from test_cases.tc_pytest_plugin import SESSION_TIMESTAMP
+from tests.helpers import close_recentapp2
 
 
 # ─── Load config ───────────────────────────────────────────────────────────────
@@ -112,6 +113,7 @@ def _create_appium_driver(serial: str = ""):
 
     drv.implicitly_wait(CFG["device"]["ui_timeout"])
     _log("[APPIUM] Driver created ✓")
+    # import pdb; pdb.set_trace()
     return drv
 
 
@@ -237,9 +239,17 @@ def driver():
             try:
                 proxy.terminate_app(pkg)
             except Exception:
-                subprocess.run(adb_prefix + ["shell", "am", "force-stop", pkg], capture_output=True)
+                # subprocess.run(adb_prefix + ["shell", "am", "force-stop", pkg], capture_output=True)
+                pass
             time.sleep(1)
             print("  [INIT] Đã kill app ✓")
+            
+            try:
+                proxy.activate_app(pkg)
+                time.sleep(2)
+                print("  [INIT] Đã activate lại app ✓")
+            except Exception:
+                pass
             print("  [INIT] Chờ UiAutomator2 sẵn sàng...")
             _adb_recover_home(serial)
             _wait_uia2_ready(proxy, timeout=40)
@@ -248,7 +258,22 @@ def driver():
             if _is_ad_showing(proxy):
                 dismiss_ads(proxy)
                 time.sleep(1)
-            dismiss_onboarding(proxy, CFG)
+                
+            try:
+                proxy.terminate_app(pkg)
+            except Exception:
+                # subprocess.run(adb_prefix + ["shell", "am", "force-stop", pkg], capture_output=True)
+                pass
+            time.sleep(1)
+            print("  [INIT] Đã kill app ✓")
+            
+            try:
+                proxy.activate_app(pkg)
+                time.sleep(2)
+                print("  [INIT] Đã activate lại app ✓")
+            except Exception:
+                pass
+            # dismiss_onboarding(proxy, CFG)
     except Exception as e:
         print(f"\n  [DRIVER] init/onboarding warning: {e}")
         if os.environ.get("RUN_INIT", "0") == "1":
@@ -362,28 +387,6 @@ def _is_uia2_crash(e: Exception) -> bool:
     return "instrumentation process is not running" in str(e)
 
 
-def _clear_recent_apps(serial: str = ""):
-    """
-    Mở Recent Apps rồi vuốt từ giữa màn hình lên trên 10 lần để đóng tất cả app.
-    Dùng ADB input để không phụ thuộc UiAutomator2.
-    """
-    adb_prefix = ["adb", "-s", serial] if serial else ["adb"]
-
-    # Mở Recent Apps (KEYCODE_APP_SWITCH = 187)
-    subprocess.run(adb_prefix + ["shell", "input", "keyevent", "187"], capture_output=True)
-    time.sleep(1)
-
-    # Vuốt từ giữa lên trên 3 lần để dismiss từng app
-    for _ in range(3):
-        subprocess.run(
-            adb_prefix + ["shell", "input", "swipe", "540", "1200", "540", "200", "300"],
-            capture_output=True,
-        )
-        time.sleep(0.3)
-
-    time.sleep(0.5)
-
-
 def _adb_recover_home(serial: str = ""):
     """
     Dùng ADB thuần (bypass UiAutomator2) để về Home screen.
@@ -419,18 +422,16 @@ def _wait_uia2_ready(driver, timeout: int = 30):
 def _ensure_uia2_alive(driver, serial: str = ""):
     """
     Kiểm tra UiAutomator2 còn sống không bằng cách gọi 1 lệnh nhẹ.
-    Nếu crash → dùng ADB recover rồi chờ UiAutomator2 tự restart.
+    Nếu fail vì bất kỳ lý do gì → recover để đảm bảo test tiếp theo không bị crash.
     """
     try:
-        # Probe 2 lệnh nhẹ để giảm false-negative (có case current_activity OK nhưng /element chết)
-        _log("[UIA2] Probe before test: current_activity + window_size")
+        _log("[UIA2] Probe before test: current_activity")
         driver.current_activity
-        driver.get_window_size()
+        print("  [UIA2] OK ✓ (probe current_activity)")
     except Exception as e:
-        if _is_uia2_crash(e):
-            _log("[UIA2 CRASH] Detected before test — recovering...")
-            # Dùng chung logic Level 1/Level 2 (giống after-test) để tránh crash ở test #2
-            _recover_uia2_after_test_if_needed(driver, serial)
+        # Recover cho mọi loại exception (crash, timeout, connection error, v.v.)
+        _log(f"[UIA2] Probe failed ({type(e).__name__}) — recovering...")
+        _recover_uia2_after_test_if_needed(driver, serial)
 
 
 def _recover_uia2_after_test_if_needed(driver, serial: str = ""):
@@ -440,6 +441,7 @@ def _recover_uia2_after_test_if_needed(driver, serial: str = ""):
     """
     try:
         driver.current_activity
+        _log(f"[UIA2 CRASH] Recovered")
         return
     except Exception as e:
         if not _is_uia2_crash(e):
@@ -510,28 +512,24 @@ def setup_before_test(driver):
     # Kiểm tra và recover UiAutomator2 nếu crash từ test trước
     _ensure_uia2_alive(driver, serial)
 
-    # Clear recent apps bằng ADB thuần (không qua UiAutomator2)
-    # Sau khi swipe recent apps, UiAutomator2 có thể crash vì system UI thay đổi
-    # → dùng _wait_uia2_ready để đảm bảo Appium restart xong trước khi test
-    _clear_recent_apps(serial)
-    _wait_uia2_ready(driver, timeout=30)
+    # Close app state bằng lifecycle command (shared helper)
+    # (thay cho thao tác Recent Apps UI để giảm crash UiAutomator2)
+    try:
+        close_recentapp2(driver, adb=None, pkg=CFG["app"]["package_name"], home=True)
+    except Exception:
+        pass
 
     pkg = CFG["app"]["package_name"]
+    # Close app/home lại 1 lần nữa để đảm bảo clean state (dùng shared helper)
     try:
-        driver.terminate_app(pkg)
-    except Exception:
-        subprocess.run((["adb", "-s", serial] if serial else ["adb"]) +
-                       ["shell", "am", "force-stop", pkg], capture_output=True)
-    try:
-        driver.press_keycode(3)  # KEYCODE_HOME
+        close_recentapp2(driver, adb=None, pkg=pkg, home=True)
     except Exception as e:
         if _is_uia2_crash(e):
-            print(f"\n  [UIA2 CRASH] UiAutomator2 crashed, recovering via ADB...")
+            _log("[UIA2 CRASH] close_recentapp2 crashed, recovering via ADB...")
             _adb_recover_home(serial)
             _wait_uia2_ready(driver, timeout=30)
         else:
-            subprocess.run((["adb", "-s", serial] if serial else ["adb"]) +
-                           ["shell", "input", "keyevent", "3"], capture_output=True)
+            pass
     time.sleep(1)
 
     # Mở app → dismiss App Open Ad → terminate app → về home
@@ -587,10 +585,7 @@ def setup_before_test(driver):
     except Exception:
         subprocess.run(adb_prefix + ["shell", "am", "force-stop", pkg], capture_output=True)
     time.sleep(1)
-    try:
-        driver.press_keycode(3)
-    except Exception:
-        subprocess.run(adb_prefix + ["shell", "input", "keyevent", "3"], capture_output=True)
+    subprocess.run(adb_prefix + ["shell", "input", "keyevent", "3"], capture_output=True)
     time.sleep(1)
 
     yield
@@ -706,7 +701,7 @@ def pytest_runtest_makereport(item, call):
             drv.save_screenshot(path)
             print(f"\n  [SCREENSHOT] {path}")
         except Exception as e:
-            print(f"\n  [SCREENSHOT FAILED] {e}")
+            print(f"\n  [SCREENSHOT FAILED]")
             # Fallback: UiAutomator2 có thể crash → dùng ADB screencap để vẫn có ảnh
             try:
                 serial = os.environ.get("TEST_DEVICE_SERIAL", "")

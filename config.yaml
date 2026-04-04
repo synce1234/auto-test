@@ -11,8 +11,8 @@ appium:
   host: 127.0.0.1
   port: 4723
 test:
-  screenshot_on_failure: true
-  record_video: true
+  screenshot_on_failure: false
+  record_video: false
   video_save_mode: always
   video_quality: low
   step_delay: 1

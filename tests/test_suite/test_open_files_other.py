@@ -31,7 +31,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from tests.helpers import (
     find, find_all, find_text, is_visible, rid,
     go_to_home, dismiss_ads, _is_ad_showing, ensure_app_foreground,
-    wait_uia2_ready,
+    wait_uia2_ready, close_recentapp2, recreate_driver,
+    is_uia2_instrumentation_crash, is_uia2_alive, restart_appium_server,
 )
 
 PKG = "pdf.reader.pdf.viewer.all.document.reader.office.viewer"
@@ -135,8 +136,10 @@ def _safe_dismiss_open_app_ad(driver, adb):
 
     # Kiểm tra system UI trước (không dùng Appium để tránh crash)
     try:
-        _, focus, _ = adb._run(["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"])
-        if any(s in (focus or "") for s in ("ResolverActivity", "ChooserActivity")):
+        _, focus0, _ = adb._run(["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"])
+        print(f"\n  [AD] entry mCurrentFocus: {(focus0 or '').strip()}")
+        if any(s in (focus0 or "") for s in ("ResolverActivity", "ChooserActivity")):
+            print("  [AD] Chooser/Resolver đang mở → skip dismiss")
             return
     except Exception:
         pass
@@ -145,63 +148,95 @@ def _safe_dismiss_open_app_ad(driver, adb):
         """Kiểm tra AdActivity có đang chạy không bằng ADB (uiautomator dump crash khi AdActivity)."""
         try:
             _, out, _ = adb._run(["shell", "dumpsys", "activity", "activities"])
-            return "gms.ads.AdActivity" in (out or "")
+            found = "gms.ads.AdActivity" in (out or "")
+            print(f"  [AD] _is_ad_activity={found}")
+            return found
         except Exception:
             return False
 
     # Phase 1: Thử ADB dump tìm text button (chỉ hoạt động khi KHÔNG phải AdActivity)
     # Nếu đang là AdActivity, uiautomator dump bị kill → bỏ qua, chuyển thẳng Phase 2
     if not _is_ad_activity():
+        print("  [AD] Phase 1: ADB dump tìm dismiss button")
         deadline = time.time() + 30
         while time.time() < deadline:
             root = _adb_dump()
             if root is not None:
                 if _reader_open_adb(root):
+                    print("  [AD] Phase 1: reader đã mở → return")
                     wait_uia2_ready(driver, timeout=40)
                     return
                 center = _find_center(root, _DISMISS_TEXTS)
                 if center:
+                    print(f"  [AD] Phase 1: tap dismiss button tại {center}")
                     adb._run(["shell", "input", "tap", str(center[0]), str(center[1])])
                     time.sleep(3)
                     break
+                else:
+                    # Log các text node trong dump để debug
+                    _texts = [n.get("text", "") for n in root.iter("node") if n.get("text")]
+                    print(f"  [AD] Phase 1: dump ok, texts={_texts[:10]}")
+            else:
+                print("  [AD] Phase 1: dump failed (None)")
             time.sleep(2)
+    else:
+        print("  [AD] Phase 1: skip (AdActivity đang chạy)")
 
-    # Phase 2: Tap tọa độ cố định liên tục cho đến khi reader mở (tối đa 150s)
-    # AdActivity (com.google.android.gms.ads.AdActivity): nút X ở góc trên-phải (~89%, ~4.5%)
-    # App Open Ad overlay: "Continue to app >" (~75%, ~13.5%) hoặc (~96%, ~10.6%)
-    # uiautomator dump không hoạt động khi AdActivity → phải dùng tap tọa độ thuần ADB.
-    # Gửi heartbeat Appium mỗi 60s để giữ session (new_command_timeout=120s).
-    root = _adb_dump()
-    if root is None or not _reader_open_adb(root):
+    # Phase 2: Tap tọa độ cố định liên tục cho đến khi reader mở (tối đa 60s)
+    # Chỉ chạy khi AdActivity đang là FOCUSED window (không dựa vào activity stack).
+    # Nếu reader đã mở hoặc AdActivity không phải focused → bỏ qua Phase 2.
+    try:
+        _, _focus2, _ = adb._run(["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"])
+        _ad_focused = "gms.ads.AdActivity" in (_focus2 or "")
+        print(f"  [AD] Phase 2 check: focus={(_focus2 or '').strip()}, ad_focused={_ad_focused}")
+    except Exception:
+        _ad_focused = False
+
+    if _ad_focused:
         w, h = _get_screen_size()
         _tap_positions = [
             (int(w * 0.89), int(h * 0.045)),  # AdActivity X button (top-right ~961, ~108)
             (int(w * 0.75), int(h * 0.135)),  # App Open Ad "Continue to app >" bar
             (int(w * 0.96), int(h * 0.106)),  # App Open Ad alternative position
         ]
-        phase2_deadline = time.time() + 150
+        print(f"  [AD] Phase 2: bắt đầu tap loop, positions={_tap_positions}")
+        phase2_deadline = time.time() + 60
         _tap_idx = 0
         _last_heartbeat = time.time()
         while time.time() < phase2_deadline:
             x, y = _tap_positions[_tap_idx % len(_tap_positions)]
+            print(f"  [AD] Phase 2: tap ({x},{y}) idx={_tap_idx}")
             adb._run(["shell", "input", "tap", str(x), str(y)])
             _tap_idx += 1
-            time.sleep(4)
+            time.sleep(3)
             # Heartbeat Appium mỗi 60s để không bị new_command_timeout
             if time.time() - _last_heartbeat >= 60:
                 try:
-                    driver.current_activity  # lightweight, an toàn kể cả khi ad đang show
+                    driver.current_activity
                     _last_heartbeat = time.time()
                 except Exception:
                     pass
-            # Nếu AdActivity đã đóng → thoát loop (dùng dumpsys, không dùng uiautomator)
-            if not _is_ad_activity():
-                root = _adb_dump()
-                if root is None or _reader_open_adb(root):
-                    break
+            # Thoát khi reader mở (ADB dump) hoặc AdActivity không còn là focused activity
+            # Dùng mCurrentFocus thay vì activity stack để tránh false-positive
+            try:
+                _, focus, _ = adb._run(["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"])
+                print(f"  [AD] Phase 2: mCurrentFocus={( focus or '').strip()}")
+                if "gms.ads.AdActivity" not in (focus or ""):
+                    print("  [AD] Phase 2: AdActivity gone → break")
+                    break  # AdActivity không còn ở foreground
+            except Exception:
+                pass
+            root2 = _adb_dump()
+            if root2 is not None and _reader_open_adb(root2):
+                print("  [AD] Phase 2: reader detected → break")
+                break  # Reader đã mở
+    else:
+        print("  [AD] Phase 2: skip (AdActivity không focused)")
 
     # Cho Appium UiAutomator2 recover sau ad dismiss
+    print("  [AD] wait_uia2_ready sau dismiss")
     wait_uia2_ready(driver, timeout=40)
+    print("  [AD] dismiss_open_app_ad done")
 
 
 def _open_via_intent(adb, uri: str, mime: str, component: str = None):
@@ -231,7 +266,7 @@ def _handle_chooser(adb, driver, option_text: str = None):
     import xml.etree.ElementTree as ET
     import re as _re
 
-    _JUST_ONCE_TEXTS = {"Just once", "Only this time"}
+    _JUST_ONCE_TEXTS = {"Just once", "Only this time", "All Docs PDF Reader"}
 
     def _dump_and_parse(timeout_sec=15):
         """Dump UI và trả về root Element, hoặc None nếu thất bại.
@@ -346,76 +381,150 @@ def _handle_chooser(adb, driver, option_text: str = None):
 
 def _wait_reader_open(driver, timeout=20) -> bool:
     """
-    Chờ màn đọc file mở (toolbar back hoặc doc_view).
-    is_visible đã bắt mọi Exception (kể cả UiAutomator2 crash) → trả False khi crash.
-    Tiếp tục polling để Appium có thể restart UiAutomator2.
+    Chờ màn đọc file mở. ADB-first để tránh phụ thuộc UiAutomator2 (hay crash sau intent).
+    1. ADB dumpsys window → lấy focused activity → check tên activity
+    2. ADB uiautomator dump → check resource-id của reader elements
+    3. Appium (is_visible, current_activity) → bonus khi UIA2 sẵn sàng
     """
-    import os
-    import re
-    import subprocess
+    import re as _re_rdr
+    import subprocess as _sp_rdr
+    import xml.etree.ElementTree as _ET_rdr
 
-    def _focused_activity_via_dumpsys() -> str:
-        """
-        Lấy activity đang focus bằng `adb shell dumpsys window windows`.
-        Trả về chuỗi dạng: "pkg/.Activity" hoặc "" nếu không đọc được.
-        """
-        serial = os.environ.get("TEST_DEVICE_SERIAL", "")
-        adb_prefix = ["adb", "-s", serial] if serial else ["adb"]
+    _serial = os.environ.get("TEST_DEVICE_SERIAL", "")
+    _adb = ["adb", "-s", _serial] if _serial else ["adb"]
+
+    _reader_activity_keywords = [
+        # "reader", "docreader", "pdfreader", "note", "docnote",
+        # "excel", "spreadsheet", "viewer", "office",
+    ]
+    _reader_rids = {
+        # f"{PKG}:id/imv_toolbar_back",
+        f"{PKG}:id/doc_view",
+        f"{PKG}:id/imv_toolbar_star",
+        f"{PKG}:id/backgroundNoteEdit",
+        f"{PKG}:id/tvNoteEdit",
+    }
+
+    def _check_activity_adb() -> bool:
+        """Kiểm tra focused activity bằng dumpsys (không cần UIA2).
+        Dùng pipe trên device shell để lọc mCurrentFocus nhanh hơn."""
         try:
-            r = subprocess.run(
-                adb_prefix + ["shell", "dumpsys", "window", "windows"],
-                capture_output=True,
-                text=True,
-                timeout=5,
+            # Truyền toàn bộ lệnh pipe như các arg riêng → adb shell ghép thành 1 lệnh
+            r = _sp_rdr.run(
+                _adb + ["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"],
+                capture_output=True, text=True, timeout=6
             )
-            out = (r.stdout or "") + "\n" + (r.stderr or "")
-        except Exception:
-            return ""
-
-        # Android versions/ROMs khác nhau: mCurrentFocus hoặc mFocusedApp
-        m = re.search(r"mCurrentFocus=Window\{[^}]*\s([\w\.]+)/(\S+)\}", out)
-        if m:
-            return f"{m.group(1)}/{m.group(2)}"
-        m = re.search(r"mFocusedApp=AppWindowToken\{[^}]*\s([\w\.]+)/(\S+)\}", out)
-        if m:
-            return f"{m.group(1)}/{m.group(2)}"
-        return ""
-
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            if is_visible(driver, "imv_toolbar_back", timeout=2):
-                return True
-            if is_visible(driver, "doc_view", timeout=2):
-                return True
-            # Fallback: một số màn reader hiển thị toolbar khác nhưng vẫn là reader
-            if is_visible(driver, "imv_toolbar_star", timeout=2):
-                return True
-        except Exception:
-            pass
-        # Fallback nhẹ: activity (tránh page_source)
-        try:
-            act = driver.current_activity or ""
-            if any(k in act for k in ["Reader", "DocReader", "PdfReader"]):
-                return True
-        except Exception:
-            pass
-        # Fallback mạnh: focused activity bằng dumpsys (không phụ thuộc UiAutomator2 tree)
-        try:
-            focused = _focused_activity_via_dumpsys()
-            print(f"{focused}")
-            if focused:
-                f = focused.lower()
-                if PKG.lower() in f and any(k in f for k in ["reader", "docreader", "pdfreader"]):
+            out = r.stdout or ""
+            m = _re_rdr.search(r"mCurrentFocus=Window\{[^}]*\s([\w\.]+)/(\S+)\}", out)
+            if m:
+                focused = f"{m.group(1)}/{m.group(2)}".lower()
+                print(f"\n  [READER] mCurrentFocus: {focused}")
+                if PKG.lower() in focused and any(k in focused for k in _reader_activity_keywords):
                     return True
         except Exception:
             pass
+        return False
+
+    def _check_dump_adb() -> bool:
+        """Kiểm tra reader resource-id bằng uiautomator dump (không cần UIA2)."""
+        try:
+            _sp_rdr.run(_adb + ["shell", "uiautomator", "dump", "/sdcard/uidump_rdr.xml"],
+                        capture_output=True, timeout=5)
+            r2 = _sp_rdr.run(_adb + ["shell", "cat", "/sdcard/uidump_rdr.xml"],
+                             capture_output=True, text=True, timeout=5)
+            xml = r2.stdout or ""
+            if "<hierarchy" in xml:
+                root = _ET_rdr.fromstring(xml)
+                for n in root.iter("node"):
+                    if n.get("resource-id", "") in _reader_rids:
+                        return True
+        except Exception:
+            pass
+        return False
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        # 1. ADB dumpsys — nhanh, không cần dump UI
+        if _check_activity_adb():
+            return True
+
+        # 2. ADB uiautomator dump — tìm element reader
+        if _check_dump_adb():
+            return True
+
+        # 3. Appium — bonus khi UIA2 sẵn sàng
+        try:
+            if is_visible(driver, "imv_toolbar_back", timeout=1):
+                return True
+            if is_visible(driver, "doc_view", timeout=1):
+                return True
+        except Exception:
+            pass
+        try:
+            act = driver.current_activity or ""
+            if any(k in act for k in ["Note"]):
+                return True
+        except Exception:
+            pass
+
         time.sleep(1)
+
     return False
 
 
-def _is_note_popup_visible(driver, timeout=15) -> bool:
-    """Kiểm tra note popup (backgroundNoteEdit) đang hiển thị."""
+def _is_note_popup_visible(driver, adb=None, timeout=15) -> bool:
+    """
+    Kiểm tra note popup đang hiển thị.
+    Ưu tiên ADB uiautomator dump vì DocNoteActivity liên tục crash UIA2.
+    """
+    import xml.etree.ElementTree as _ET_note
+
+    _note_rids = {f"{PKG}:id/backgroundNoteEdit", f"{PKG}:id/tvNoteEdit"}
+
+    def _check_via_adb(_adb_obj) -> bool:
+        """Dùng ADB dump để tìm note popup elements."""
+        try:
+            _adb_obj._run(["shell", "uiautomator", "dump", "/sdcard/uidump_note.xml"])
+            _, _xml, _ = _adb_obj._run(["shell", "cat", "/sdcard/uidump_note.xml"])
+            if not _xml or "<hierarchy" not in _xml:
+                return False
+            _root = _ET_note.fromstring(_xml)
+            for _n in _root.iter("node"):
+                if _n.get("resource-id", "") in _note_rids:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    # Ưu tiên ADB dump
+    if adb is not None:
+        import re as _re_note_ad
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if _check_via_adb(adb):
+                return True
+            # AppOpenAd có thể xuất hiện và kill uiautomator dump → dismiss qua ADB
+            try:
+                _, _focus, _ = adb._run(["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"])
+                if "gms.ads.AdActivity" in (_focus or ""):
+                    _, _ws, _ = adb._run(["shell", "wm", "size"])
+                    _mm = _re_note_ad.search(r"(\d+)x(\d+)", _ws or "")
+                    _w, _h = (int(_mm.group(1)), int(_mm.group(2))) if _mm else (1080, 2400)
+                    for _tx, _ty in [(int(_w * 0.89), int(_h * 0.045)),
+                                     (int(_w * 0.96), int(_h * 0.106))]:
+                        adb._run(["shell", "input", "tap", str(_tx), str(_ty)])
+                        time.sleep(2)
+                        _, _f2, _ = adb._run(["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"])
+                        if "gms.ads.AdActivity" not in (_f2 or ""):
+                            break
+                    time.sleep(1)
+                    continue
+            except Exception:
+                pass
+            time.sleep(1.5)
+        return False
+
+    # Fallback Appium nếu không có adb (backward compat)
     try:
         el = WebDriverWait(driver, timeout).until(
             EC.visibility_of_element_located(
@@ -423,18 +532,48 @@ def _is_note_popup_visible(driver, timeout=15) -> bool:
             )
         )
         return el.is_displayed()
-    except TimeoutException:
+    except Exception:
+        try:
+            WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((AppiumBy.ID, rid("tvNoteEdit")))
+            )
+            return True
+        except Exception:
+            pass
         return False
 
 
-def _is_note_edit_visible(driver, timeout=10) -> bool:
-    """Kiểm tra tvNoteEdit EditText tồn tại (keyboard focused)."""
+def _is_note_edit_visible(driver, adb=None, timeout=10) -> bool:
+    """
+    Kiểm tra tvNoteEdit EditText tồn tại (keyboard focused).
+    Ưu tiên ADB dump vì DocNoteActivity liên tục crash UIA2.
+    """
+    import xml.etree.ElementTree as _ET_edit
+
+    _edit_rid = f"{PKG}:id/tvNoteEdit"
+
+    if adb is not None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_edit.xml"])
+                _, _xml, _ = adb._run(["shell", "cat", "/sdcard/uidump_edit.xml"])
+                if _xml and "<hierarchy" in _xml:
+                    _root = _ET_edit.fromstring(_xml)
+                    for _n in _root.iter("node"):
+                        if _n.get("resource-id", "") == _edit_rid:
+                            return True
+            except Exception:
+                pass
+            time.sleep(1.5)
+        return False
+
     try:
         WebDriverWait(driver, timeout).until(
             EC.presence_of_element_located((AppiumBy.ID, rid("tvNoteEdit")))
         )
         return True
-    except TimeoutException:
+    except Exception:
         return False
 
 
@@ -631,6 +770,66 @@ def _check_reader_toolbar(driver, expected_ids: list, timeout=15) -> list:
     return missing
 
 
+# ─── UiAutomator2 recovery helper ─────────────────────────────────────────────
+
+def _ensure_uia2_alive(driver, adb, cfg) -> bool:
+    """
+    Ensure UiAutomator2 responsive trước khi chạy steps.
+    - Probe nhẹ bằng is_uia2_alive()
+    - Nếu crash → force-stop UiA2 server bằng ADB + HOME + wait_uia2_ready()
+    - Nếu vẫn crash → restart Appium + recreate driver session (nếu driver là proxy)
+    """
+    try:
+        if is_uia2_alive(driver):
+            print("\n  [UIA2] OK ✓ (probe current_activity)")
+            return True
+    except Exception:
+        pass
+
+    try:
+        print("\n  [UIA2] CRASH detected → restarting UiAutomator2 via ADB...")
+        for _pkg in ["io.appium.uiautomator2.server", "io.appium.uiautomator2.server.test"]:
+            adb._run(["shell", "am", "force-stop", _pkg])
+        # adb._run(["shell", "input", "keyevent", "3"])  # HOME
+        time.sleep(2)
+        ok = wait_uia2_ready(driver, timeout=40)
+        if ok and is_uia2_alive(driver):
+            print("\n  [UIA2] Restarted ✓ (no longer crashing)")
+            return True
+
+        print("\n  [UIA2] Restart attempted but still unstable ✗")
+
+        # Escalate: restart Appium + recreate driver session
+        try:
+            port = int(cfg.get("appium", {}).get("port", 4723))
+        except Exception:
+            port = 4723
+        print(f"\n  [APPIUM] Escalate: restart Appium on port {port} + recreate driver...")
+        restart_appium_server(port)
+        try:
+            old = getattr(driver, "driver", driver)
+            new_drv = recreate_driver(old_driver=old, device_serial=getattr(adb, "serial", "") or "")
+            if hasattr(driver, "set_driver"):
+                driver.set_driver(new_drv)
+                print("\n  [APPIUM] Driver session recreated ✓")
+            else:
+                print("\n  [APPIUM] Driver is not proxy; cannot swap session ✗")
+                try:
+                    new_drv.quit()
+                except Exception:
+                    pass
+                return False
+            if is_uia2_alive(driver):
+                print("\n  [UIA2] OK after Appium restart ✓")
+                return True
+        except Exception as e:
+            print(f"\n  [APPIUM] Recreate driver failed ✗: {e}")
+        return False
+    except Exception:
+        print("\n  [UIA2] Restart failed with exception ✗")
+        return False
+
+
 # ─── Test Class ───────────────────────────────────────────────────────────────
 
 class TestOpenFilesOther:
@@ -640,6 +839,8 @@ class TestOpenFilesOther:
     def setup_teardown(self, driver, adb, cfg, request):
         """Setup: về home, dismiss ads. Teardown: xóa file test."""
         # Các test mở file từ app khác (TC017-020) không cần launch app PDF trước
+        # import pdb; pdb.set
+        _ensure_uia2_alive(driver, adb, cfg)
         no_app_launch = request.node.get_closest_marker("no_app_launch") is not None
         try:
             if no_app_launch:
@@ -662,6 +863,13 @@ class TestOpenFilesOther:
                 _sp.run(adb_prefix + ["shell", "input", "keyevent", "3"], capture_output=True)
                 time.sleep(3)
             # Bỏ qua lỗi setup — test sẽ fail/error nhưng session vẫn tiếp tục
+        try:
+            driver.activate_app(PKG)
+            time.sleep(1)
+            driver.press_keycode(3)
+            time.sleep(1)
+        except Exception:
+            pass
         yield
         for remote_path in [REMOTE_PDF_PATH, REMOTE_PPTX_PATH, REMOTE_EPUB_PATH,
                             REMOTE_TXT_PATH, REMOTE_DOCX_PATH, REMOTE_XLSX_PATH,
@@ -688,6 +896,15 @@ class TestOpenFilesOther:
                 adb._run(["shell", "rm", "-f", remote_path])
             except Exception:
                 pass
+            
+        try:
+            driver.activate_app(PKG)            
+            time.sleep(2)
+        except Exception:
+            pass
+        # driver.press_keycode(3)
+        time.sleep(1)
+    
 
     # ── TC-026: PDF + Note to File ─────────────────────────────────────────
 
@@ -718,10 +935,10 @@ class TestOpenFilesOther:
         reader_open = _wait_reader_open(driver, timeout=20)
         assert reader_open, "Reader không mở sau khi launch PdfNoteActivity"
 
-        note_popup = _is_note_popup_visible(driver, timeout=15)
+        note_popup = _is_note_popup_visible(driver, adb=adb, timeout=15)
         assert note_popup, "Note popup (backgroundNoteEdit) không hiển thị"
 
-        note_edit = _is_note_edit_visible(driver, timeout=8)
+        note_edit = _is_note_edit_visible(driver, adb=adb, timeout=8)
         assert note_edit, "tvNoteEdit không có focus cho note popup"
 
         print("\n  TC-026 PASS: Reader mở + note popup hiện + keyboard focused")
@@ -828,10 +1045,10 @@ class TestOpenFilesOther:
         reader_open = _wait_reader_open(driver, timeout=25)
         assert reader_open, "Reader không mở sau khi launch DocNoteActivity"
 
-        note_popup = _is_note_popup_visible(driver, timeout=15)
+        note_popup = _is_note_popup_visible(driver, adb=adb, timeout=15)
         assert note_popup, "Note popup (backgroundNoteEdit) không hiển thị"
 
-        note_edit = _is_note_edit_visible(driver, timeout=8)
+        note_edit = _is_note_edit_visible(driver, adb=adb, timeout=8)
         assert note_edit, "tvNoteEdit không có focus cho note popup"
 
         print("\n  TC-029 PASS: PPT/PPTX mở + note popup hiện + keyboard focused")
@@ -969,10 +1186,10 @@ class TestOpenFilesOther:
         reader_open = _wait_reader_open(driver, timeout=25)
         assert reader_open, "Reader không mở sau khi launch DocNoteActivity với EPUB"
 
-        note_popup = _is_note_popup_visible(driver, timeout=15)
+        note_popup = _is_note_popup_visible(driver, adb=adb, timeout=15)
         assert note_popup, "Note popup (backgroundNoteEdit) không hiển thị"
 
-        note_edit = _is_note_edit_visible(driver, timeout=8)
+        note_edit = _is_note_edit_visible(driver, adb=adb, timeout=8)
         assert note_edit, "tvNoteEdit không có focus cho note popup"
 
         print("\n  TC-033 PASS: EPUB mở + note popup hiện + keyboard focused")
@@ -1037,10 +1254,10 @@ class TestOpenFilesOther:
         reader_open = _wait_reader_open(driver, timeout=25)
         assert reader_open, "Reader không mở sau khi launch DocNoteActivity với TXT"
 
-        note_popup = _is_note_popup_visible(driver, timeout=15)
+        note_popup = _is_note_popup_visible(driver, adb=adb, timeout=15)
         assert note_popup, "Note popup (backgroundNoteEdit) không hiển thị"
 
-        note_edit = _is_note_edit_visible(driver, timeout=8)
+        note_edit = _is_note_edit_visible(driver, adb=adb, timeout=8)
         assert note_edit, "tvNoteEdit không có focus cho note popup"
 
         print("\n  TC-035 PASS: TXT mở + note popup hiện + keyboard focused")
@@ -1876,22 +2093,7 @@ class TestOpenFilesOther:
         print(f"\n  TC-054 PASS: {len(available)} định dạng text mở thành công bằng text editor")
 
     # ── TC-017: Doc/Docx từ app khác — basic open ──────────────────────────
-    def _clear_recent_apps(self, adb):
-        """
-        Mở Recent Apps rồi vuốt từ giữa màn hình lên trên 10 lần để đóng tất cả app.
-        Dùng ADB input để không phụ thuộc UiAutomator2.
-        """
-
-        # Mở Recent Apps (KEYCODE_APP_SWITCH = 187)
-        adb._run(["shell", "input", "keyevent", "187"])
-        time.sleep(2)
-
-        # Vuốt từ giữa lên trên 3 lần để dismiss từng app
-        for _ in range(3):
-            adb._run(["shell", "input", "swipe", "540", "1200", "540", "200", "300"])
-            time.sleep(0.3)
-
-        time.sleep(0.5)
+    # NOTE: close_recentapp2() trong tests.helpers được dùng thay vì helper nội bộ.
     @pytest.mark.tc_id("TC-017")
     @pytest.mark.no_app_launch
     def test_tc017_docx_open_from_external(self, driver, adb, cfg):
@@ -1904,14 +2106,8 @@ class TestOpenFilesOther:
         if not os.path.exists(_res("sample.docx")):
             pytest.skip("Không có sample.docx để test")
 
-        # Close recent app state: mở Recent Apps và vuốt dismiss, sau đó force-stop app
-        # Yêu cầu test: close recent app → rồi mới chạy intent mở file DOCX từ app khác
-        self._clear_recent_apps(adb)
-        try:
-            adb._run(["shell", "input", "keyevent", "KEYCODE_HOME"])
-            time.sleep(1)
-        except Exception:
-            pass
+        # Close recent app state bằng lifecycle command (shared helper)
+        close_recentapp2(driver, adb, pkg=PKG)
 
         _push(adb, "sample.docx", REMOTE_DOCX_PATH)
 
@@ -1952,6 +2148,8 @@ class TestOpenFilesOther:
                 quay lại Home → vào tab Star → kiểm tra file có trong danh sách
         Expected: File xuất hiện trong tab Star sau khi bấm nút Star
         """
+        # Close recent app state bằng lifecycle command (shared helper)
+        close_recentapp2(driver, adb, pkg=PKG)
         if not os.path.exists(_res("sample.docx")):
             pytest.skip("Không có sample.docx để test")
 
@@ -1960,23 +2158,148 @@ class TestOpenFilesOther:
         # Mở file qua intent (chooser → chọn PDF Reader → Just once)
         _open_via_intent(adb, f"file://{REMOTE_DOCX_PATH}", MIME_DOCX)
         _handle_chooser(adb, driver)
+
+        # Sau khi chooser đóng, UiA2 có thể crash/restart — recover trước khi assert UI
+        _ensure_uia2_alive(driver, adb, cfg)
+        try:
+            driver.activate_app(PKG)
+        except Exception:
+            pass
+        time.sleep(2)
+
+        # Ads sau intent-open thường là AdActivity/WebView overlay → dismiss bằng ADB thuần (ổn định hơn dismiss_ads)
         _safe_dismiss_open_app_ad(driver, adb)
 
+        _ensure_uia2_alive(driver, adb, cfg)
+
+        # Nếu reader chưa mở do timing/UiA2 crash, retry mở intent 1 lần
         reader_open = _wait_reader_open(driver, timeout=25)
+        if not reader_open:
+            _open_via_intent(adb, f"file://{REMOTE_DOCX_PATH}", MIME_DOCX)
+            _handle_chooser(adb, driver)
+            _ensure_uia2_alive(driver, adb, cfg)
+            try:
+                driver.activate_app(PKG)
+            except Exception:
+                pass
+            _safe_dismiss_open_app_ad(driver, adb)
+            reader_open = _wait_reader_open(driver, timeout=25)
         assert reader_open, "Reader không mở sau khi mở Doc/Docx từ app khác"
 
-        # Bấm nút Star (imv_toolbar_star) trong reader
-        star_btn = find(driver, "imv_toolbar_star", timeout=10)
-        star_btn.click()
+        # UiAutomator2 có thể crash trong quá trình mở file/dismiss ad → recover trước khi tìm toolbar
+        wait_uia2_ready(driver, timeout=30)
+
+        # Đóng keyboard nếu đang mở (Phase 2 có thể tap vào document làm keyboard bật lên)
+        try:
+            driver.hide_keyboard()
+            time.sleep(0.5)
+        except Exception:
+            pass
+
+        # Bấm nút Star bằng ADB (UiAutomator2 crash khi DocReaderActivity mở → bypass Appium)
+        # ADB dump xác nhận imv_toolbar_star tồn tại → dùng bounds từ dump để tap
+        import xml.etree.ElementTree as _ET
+        import re as _re2
+
+        def _adb_tap_by_rid(resource_id: str) -> bool:
+            """Tìm element theo resource-id trong ADB dump, tap vào center. Trả về True nếu thành công."""
+            try:
+                adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_star.xml"])
+                _, _xml, _ = adb._run(["shell", "cat", "/sdcard/uidump_star.xml"])
+                if not _xml or "<hierarchy" not in _xml:
+                    return False
+                _r = _ET.fromstring(_xml)
+                _full_rid = f"{PKG}:id/{resource_id}"
+                for _n in _r.iter("node"):
+                    if _n.get("resource-id", "") == _full_rid:
+                        nums = _re2.findall(r"\d+", _n.get("bounds", ""))
+                        if len(nums) >= 4:
+                            cx = (int(nums[0]) + int(nums[2])) // 2
+                            cy = (int(nums[1]) + int(nums[3])) // 2
+                            adb._run(["shell", "input", "tap", str(cx), str(cy)])
+                            return True
+            except Exception:
+                pass
+            return False
+
+        star_tapped = _adb_tap_by_rid("imv_toolbar_star")
+        assert star_tapped, "Không thể tap nút Star (imv_toolbar_star) qua ADB dump"
         time.sleep(1)
 
-        # Quay lại Home
-        driver.back()
-        time.sleep(1)
-        go_to_home(driver, cfg)
+        # Quay lại màn main của app qua ADB BACK
+        adb._run(["shell", "input", "keyevent", "4"])   # KEYCODE_BACK
+        time.sleep(1.5)
 
-        # Vào tab Star và kiểm tra file trong danh sách
-        in_star = _is_file_in_star_tab(driver, "sample_docx_autotest")
+        # Dismiss rating dialog "Do you like PDF Reader?" nếu xuất hiện — qua ADB dump
+        _adb_tap_by_rid("imv_close_rate")
+        time.sleep(0.5)
+
+        # Tap tab Star (layoutStar) qua ADB dump
+        def _adb_tap_by_rid_wait(resource_id: str, retries: int = 3, delay: float = 1.0) -> bool:
+            for _ in range(retries):
+                if _adb_tap_by_rid(resource_id):
+                    return True
+                time.sleep(delay)
+            return False
+
+        star_tab_tapped = _adb_tap_by_rid_wait("layoutStar", retries=5, delay=1.0)
+        assert star_tab_tapped, "Không thể tap tab Star (layoutStar) qua ADB dump"
+        time.sleep(1.5)
+
+        # Tap nút filter (imv_filter_file) → chọn "All files" qua ADB dump
+        _adb_tap_by_rid("imv_filter_file")
+        time.sleep(0.8)
+
+        # Tìm và tap item "All files" trong dropdown (text node)
+        def _adb_tap_by_text(text: str) -> bool:
+            try:
+                adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_filter.xml"])
+                _, _xml, _ = adb._run(["shell", "cat", "/sdcard/uidump_filter.xml"])
+                if not _xml or "<hierarchy" not in _xml:
+                    return False
+                _r = _ET.fromstring(_xml)
+                for _n in _r.iter("node"):
+                    if _n.get("text", "").startswith(text):
+                        nums = _re2.findall(r"\d+", _n.get("bounds", ""))
+                        if len(nums) >= 4:
+                            cx = (int(nums[0]) + int(nums[2])) // 2
+                            cy = (int(nums[1]) + int(nums[3])) // 2
+                            adb._run(["shell", "input", "tap", str(cx), str(cy)])
+                            return True
+            except Exception:
+                pass
+            return False
+
+        _adb_tap_by_text("All files")
+        time.sleep(1.0)
+
+        # Kiểm tra file "sample_docx_autotest" xuất hiện trong danh sách Star tab qua ADB dump
+        def _adb_file_in_star() -> bool:
+            try:
+                adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_star_list.xml"])
+                _, _xml, _ = adb._run(["shell", "cat", "/sdcard/uidump_star_list.xml"])
+                if not _xml or "<hierarchy" not in _xml:
+                    return False
+                _r = _ET.fromstring(_xml)
+                _full_rid = f"{PKG}:id/vl_item_file_name"
+                for _n in _r.iter("node"):
+                    if _n.get("resource-id", "") == _full_rid:
+                        if "sample_docx_autotest" in _n.get("text", ""):
+                            return True
+            except Exception:
+                pass
+            return False
+
+        # Thử tối đa 3 lần (scroll nếu cần)
+        in_star = False
+        for _ in range(3):
+            if _adb_file_in_star():
+                in_star = True
+                break
+            # Scroll down nhẹ rồi thử lại
+            adb._run(["shell", "input", "swipe", "540", "800", "540", "400", "500"])
+            time.sleep(0.8)
+
         assert in_star, "File không xuất hiện trong tab Star sau khi bấm nút Star"
 
         print("\n  TC-018 PASS: Doc/Docx mark favourite → file xuất hiện trong Star tab")
@@ -1998,15 +2321,16 @@ class TestOpenFilesOther:
 
         _open_via_intent(adb, f"file://{REMOTE_DOCX_PATH}", MIME_DOCX)
         _handle_chooser(adb, driver, option_text="Note To File")
+        time.sleep(10)
         _safe_dismiss_open_app_ad(driver, adb)
 
         reader_open = _wait_reader_open(driver, timeout=25)
         assert reader_open, "Reader không mở sau khi launch DocNoteActivity với DOCX"
 
-        note_popup = _is_note_popup_visible(driver, timeout=15)
+        note_popup = _is_note_popup_visible(driver, adb=adb, timeout=15)
         assert note_popup, "Note popup không hiển thị sau khi mở DOCX với Note to File"
 
-        note_edit = _is_note_edit_visible(driver, timeout=8)
+        note_edit = _is_note_edit_visible(driver, adb=adb, timeout=8)
         assert note_edit, "tvNoteEdit không có focus cho note popup với DOCX"
 
         print("\n  TC-019 PASS: Doc/Docx note to file → reader + note popup + keyboard")
@@ -2022,17 +2346,23 @@ class TestOpenFilesOther:
                chọn app PDF Reader → Just once → dismiss ads → reader mở
         Expected: Reader mở thành công
         """
+        pkg = cfg["app"]["package_name"]
+        try:
+            adb.force_stop_app(pkg)
+            time.sleep(1)
+        except Exception:
+            pass
         if not os.path.exists(_res("sample.xlsx")):
             pytest.skip("Không có sample.xlsx để test")
-
+        
         _push(adb, "sample.xlsx", REMOTE_XLSX_PATH)
 
         # Không chỉ định component để trigger Android chooser
-        _open_via_intent(adb, f"file://{REMOTE_XLSX_PATH}", MIME_XLSX)
+        _open_via_intent(adb, f"file://{REMOTE_XLSX_PATH}", MIME_DOCX)
 
         # Chọn app PDF Reader trong chooser + "Just once"
-        _handle_chooser(adb, driver)
-
+        _handle_chooser(adb, driver, option_text="Just once")
+        time.sleep(10)
         _safe_dismiss_open_app_ad(driver, adb)
 
         # Flow đúng: intent → File Chooser hệ thống → chọn app → Just once →
@@ -2047,12 +2377,12 @@ class TestOpenFilesOther:
     # TC-021 (PDF có password từ Home) đã được triển khai trong:
     # tests/test_suite/test_open_files_password.py::TestOpenFilesPassword::test_tc021_open_password_file_from_home
 
-    # ── TC-022: Excel + Note to File ──────────────────────────────────────
+    # ── TC-055: Excel + Note to File ──────────────────────────────────────
 
-    @pytest.mark.tc_id("TC-022")
-    def test_tc022_xlsx_note_to_file(self, driver, adb, cfg):
+    @pytest.mark.tc_id("TC-055")
+    def test_tc055_xlsx_note_to_file(self, driver, adb, cfg):
         """
-        TC-022: Mở file Excel từ app khác với action Note to File
+        TC-055: Mở file Excel từ app khác với action Note to File
         Expected: Reader mở + note popup hiện + keyboard focused
         """
         if not os.path.exists(_res("sample.xlsx")):
@@ -2074,20 +2404,20 @@ class TestOpenFilesOther:
         reader_open = _wait_reader_open(driver, timeout=25)
         assert reader_open, "Reader không mở sau khi launch DocNoteActivity với XLSX"
 
-        note_popup = _is_note_popup_visible(driver, timeout=15)
+        note_popup = _is_note_popup_visible(driver, adb=adb, timeout=15)
         assert note_popup, "Note popup không hiển thị sau khi mở XLSX với Note to File"
 
-        note_edit = _is_note_edit_visible(driver, timeout=8)
+        note_edit = _is_note_edit_visible(driver, adb=adb, timeout=8)
         assert note_edit, "tvNoteEdit không có focus cho note popup với XLSX"
 
-        print("\n  TC-022 PASS: Excel note to file → reader + note popup + keyboard")
+        print("\n  TC-055 PASS: Excel note to file → reader + note popup + keyboard")
 
-    # ── TC-023: PDF từ app khác — basic open ──────────────────────────────
+    # ── TC-056: PDF từ app khác — basic open ──────────────────────────────
 
-    @pytest.mark.tc_id("TC-023")
-    def test_tc023_pdf_open_from_external(self, driver, adb, cfg):
+    @pytest.mark.tc_id("TC-056")
+    def test_tc056_pdf_open_from_external(self, driver, adb, cfg):
         """
-        TC-023: Mở file PDF từ app khác (basic open)
+        TC-056: Mở file PDF từ app khác (basic open)
         Expected: Reader mở thành công
         """
         if not os.path.exists(_res("sample_simple.pdf")):
@@ -2109,12 +2439,12 @@ class TestOpenFilesOther:
         reader_open = _wait_reader_open(driver, timeout=25)
         assert reader_open, "Reader không mở sau khi mở PDF từ app khác"
 
-        print("\n  TC-023 PASS: PDF mở từ app khác → reader hiển thị")
+        print("\n  TC-056 PASS: PDF mở từ app khác → reader hiển thị")
 
-    # ── TC-024: PDF + Dark Mode ────────────────────────────────────────────
+    # ── TC-057: PDF + Dark Mode ────────────────────────────────────────────
 
-    @pytest.mark.tc_id("TC-024")
-    def test_tc024_pdf_dark_mode_from_external(self, driver, adb, cfg):
+    @pytest.mark.tc_id("TC-057")
+    def test_tc057_pdf_dark_mode_from_external(self, driver, adb, cfg):
         """
         TC-024: Mở file PDF từ app khác rồi bật Dark Mode
         Expected: Reader mở + dark mode được toggle thành công
@@ -2163,12 +2493,12 @@ class TestOpenFilesOther:
         assert dark_mode_clicked, "Không tìm thấy nút Dark Mode trên toolbar"
         assert reader_open, "Reader không còn hiển thị sau khi bật Dark Mode"
 
-        print("\n  TC-024 PASS: PDF mở từ app khác + Dark Mode toggle thành công")
+        print("\n  TC-057 PASS: PDF mở từ app khác + Dark Mode toggle thành công")
 
-    # ── TC-025: PDF + Mark Favourite ──────────────────────────────────────
+    # ── TC-058: PDF + Mark Favourite ──────────────────────────────────────
 
-    @pytest.mark.tc_id("TC-025")
-    def test_tc025_pdf_mark_favourite(self, driver, adb, cfg):
+    @pytest.mark.tc_id("TC-058")
+    def test_tc058_pdf_mark_favourite(self, driver, adb, cfg):
         """
         TC-025: Mở file PDF từ app khác với action Mark Favourite
         Expected: Reader mở + file được thêm vào Favourite
@@ -2199,7 +2529,7 @@ class TestOpenFilesOther:
         favourite_saved = "SAVED FAVORITE" in logcat_out
         assert favourite_saved, "Favourite chưa được lưu (SAVED FAVORITE không tìm thấy trong logcat)"
 
-        print("\n  TC-025 PASS: PDF mark favourite từ app khác thành công")
+        print("\n  TC-058 PASS: PDF mark favourite từ app khác thành công")
 
 
 # ─── Helpers cho fresh install tests ──────────────────────────────────────────

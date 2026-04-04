@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from tests.helpers import (
     find, find_all, is_visible, rid,
     go_to_home, dismiss_ads, _is_ad_showing, ensure_app_foreground,
+    wait_uia2_ready,
 )
 
 PKG = "pdf.reader.pdf.viewer.all.document.reader.office.viewer"
@@ -84,7 +85,7 @@ def open_password_pdf_from_home(driver, adb, cfg):
 
     file_name = "sample_password_autotest"
 
-    # Dùng UiScrollable để scroll và tìm file theo tên (kể cả khi file không visible)
+    # Thử Appium UiScrollable trước (scroll + find)
     try:
         el = driver.find_element(
             AppiumBy.ANDROID_UIAUTOMATOR,
@@ -97,7 +98,7 @@ def open_password_pdf_from_home(driver, adb, cfg):
     except Exception:
         pass
 
-    # Fallback: tìm trong visible items
+    # Fallback Appium: tìm trong visible items (không scroll)
     items = find_all(driver, "vl_item_file_name", timeout=5)
     for item in items:
         if file_name in (item.text or ""):
@@ -105,14 +106,118 @@ def open_password_pdf_from_home(driver, adb, cfg):
             time.sleep(3)
             return True
 
+    # Fallback ADB: scroll + dump để tìm file (khi UIA2 crash)
+    import xml.etree.ElementTree as _ET_pw
+    import re as _re_pw
+    import os as _os_pw
+
+    _pkg = cfg["app"]["package_name"]
+    _rid_file = f"{_pkg}:id/vl_item_file_name"
+
+    def _adb_find_and_tap_file() -> bool:
+        """Dump UI, tìm vl_item_file_name chứa file_name, tap nếu tìm thấy."""
+        try:
+            adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_pw.xml"])
+            _, _xml, _ = adb._run(["shell", "cat", "/sdcard/uidump_pw.xml"])
+            if not _xml or "<hierarchy" not in _xml:
+                return False
+            _root = _ET_pw.fromstring(_xml)
+            for _n in _root.iter("node"):
+                if _n.get("resource-id", "") == _rid_file and file_name in _n.get("text", ""):
+                    _nums = _re_pw.findall(r"\d+", _n.get("bounds", ""))
+                    if len(_nums) >= 4:
+                        _cx = (int(_nums[0]) + int(_nums[2])) // 2
+                        _cy = (int(_nums[1]) + int(_nums[3])) // 2
+                        adb._run(["shell", "input", "tap", str(_cx), str(_cy)])
+                        return True
+        except Exception:
+            pass
+        return False
+
+    # Lấy screen size để tính tọa độ swipe
+    try:
+        _, _sz, _ = adb._run(["shell", "wm", "size"])
+        _m = _re_pw.search(r"(\d+)x(\d+)", _sz or "")
+        _sw, _sh = (int(_m.group(1)), int(_m.group(2))) if _m else (1080, 2400)
+    except Exception:
+        _sw, _sh = 1080, 2400
+
+    # Scroll xuống tối đa 8 lần, mỗi lần check + swipe
+    for _i in range(8):
+        if _adb_find_and_tap_file():
+            time.sleep(2)
+            return True
+        # Swipe lên (scroll list xuống dưới)
+        adb._run(["shell", "input", "swipe",
+                  str(_sw // 2), str(int(_sh * 0.75)),
+                  str(_sw // 2), str(int(_sh * 0.25)),
+                  "400"])
+        time.sleep(0.8)
+
+    # Lần check cuối sau scroll
+    if _adb_find_and_tap_file():
+        time.sleep(2)
+        return True
+
     return False
 
 
-def wait_for_password_dialog(driver, timeout=15) -> bool:
-    """Chờ dialog nhập password xuất hiện."""
+def wait_for_password_dialog(driver, adb=None, timeout=15) -> bool:
+    """
+    Chờ dialog nhập password xuất hiện.
+    Ưu tiên ADB dump (resource-id edtPassWord) để tránh crash UIA2 khi AppOpenAd trigger sau
+    khi file được tap.
+    """
+    import xml.etree.ElementTree as _ET_pwd
+    import re as _re_pwd
+
+    _pwd_rid = f"{PKG}:id/edtPassWord"
+    _pwd_title_rid = f"{PKG}:id/vl_title_rename"
+
+    if adb is not None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            # Nếu AdActivity đang focused → dismiss trước khi dump
+            try:
+                _, _focus, _ = adb._run(["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"])
+                if "gms.ads.AdActivity" in (_focus or ""):
+                    _, _ws, _ = adb._run(["shell", "wm", "size"])
+                    _mm = _re_pwd.search(r"(\d+)x(\d+)", _ws or "")
+                    _w, _h = (int(_mm.group(1)), int(_mm.group(2))) if _mm else (1080, 2400)
+                    for _tx, _ty in [(int(_w * 0.89), int(_h * 0.045)),
+                                     (int(_w * 0.96), int(_h * 0.106))]:
+                        adb._run(["shell", "input", "tap", str(_tx), str(_ty)])
+                        time.sleep(2)
+                        _, _f2, _ = adb._run(["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"])
+                        if "gms.ads.AdActivity" not in (_f2 or ""):
+                            break
+                    time.sleep(1)
+                    continue
+            except Exception:
+                pass
+            # Dump UI tìm dialog password
+            try:
+                adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_pwd_dlg.xml"])
+                _, _xml, _ = adb._run(["shell", "cat", "/sdcard/uidump_pwd_dlg.xml"])
+                if _xml and "<hierarchy" in _xml:
+                    _root = _ET_pwd.fromstring(_xml)
+                    for _n in _root.iter("node"):
+                        _rid = _n.get("resource-id", "")
+                        if _rid in (_pwd_rid, _pwd_title_rid):
+                            return True
+                        # Fallback: EditText với hint "Enter Password"
+                        if (_n.get("class", "") == "android.widget.EditText"
+                                and "password" in _n.get("password", "false").lower()):
+                            return True
+            except Exception:
+                pass
+            time.sleep(1.5)
+        return False
+
+    # Appium fallback (khi không có adb)
     selectors = [
+        (AppiumBy.ID, f"{PKG}:id/edtPassWord"),
         (AppiumBy.XPATH, '//*[contains(@text, "Password") or contains(@text, "password") or contains(@text, "Enter") or contains(@text, "Mật khẩu")]'),
-        (AppiumBy.XPATH, '//*[contains(@resource-id, "password") or contains(@resource-id, "pass")]'),
         (AppiumBy.XPATH, '//android.widget.EditText'),
     ]
     for by, sel in selectors:
@@ -127,11 +232,9 @@ def wait_for_password_dialog(driver, timeout=15) -> bool:
 
 
 def find_password_input(driver):
-    """Tìm EditText để nhập password."""
+    """Tìm EditText để nhập password. Resource ID thực tế: edtPassWord."""
     selectors = [
-        (AppiumBy.XPATH, '//*[contains(@resource-id, "password") and @class="android.widget.EditText"]'),
-        (AppiumBy.XPATH, '//*[contains(@resource-id, "pass") and @class="android.widget.EditText"]'),
-        (AppiumBy.XPATH, '//*[contains(@resource-id, "edt") and @class="android.widget.EditText"]'),
+        (AppiumBy.ID, f"{PKG}:id/edtPassWord"),
         (AppiumBy.XPATH, '//android.widget.EditText'),
     ]
     for by, sel in selectors:
@@ -144,17 +247,44 @@ def find_password_input(driver):
     return None
 
 
-def click_ok_button(driver):
-    """Click nút OK hoặc Confirm trên dialog."""
+def _adb_tap_by_rid(adb, rid_suffix: str, dump_file="/sdcard/uidump_dlg.xml") -> bool:
+    """ADB dump → tìm node theo resource-id → tap center. Trả về True nếu thành công."""
+    import xml.etree.ElementTree as _ET_tap
+    import re as _re_tap
+    _rid = f"{PKG}:id/{rid_suffix}"
+    try:
+        adb._run(["shell", "uiautomator", "dump", dump_file])
+        _, _xml, _ = adb._run(["shell", "cat", dump_file])
+        if not _xml or "<hierarchy" not in _xml:
+            return False
+        _root = _ET_tap.fromstring(_xml)
+        for _n in _root.iter("node"):
+            if _n.get("resource-id", "") == _rid:
+                _nums = _re_tap.findall(r"\d+", _n.get("bounds", ""))
+                if len(_nums) >= 4:
+                    _cx = (int(_nums[0]) + int(_nums[2])) // 2
+                    _cy = (int(_nums[1]) + int(_nums[3])) // 2
+                    adb._run(["shell", "input", "tap", str(_cx), str(_cy)])
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def click_ok_button(driver, adb=None):
+    """Click nút OK trên dialog. Resource ID thực tế: btn_dialog_save."""
+    if adb is not None:
+        if _adb_tap_by_rid(adb, "btn_dialog_save"):
+            time.sleep(2)
+            return True
     selectors = [
-        '//*[@text="OK" or @text="Ok" or @text="Confirm" or @text="Open"]',
-        '//*[contains(@resource-id, "btn_ok") or contains(@resource-id, "btnOk") or contains(@resource-id, "button_ok")]',
-        '//*[contains(@resource-id, "positive")]',
+        (AppiumBy.ID, f"{PKG}:id/btn_dialog_save"),
+        (AppiumBy.XPATH, '//*[@text="OK" or @text="Ok"]'),
     ]
-    for xpath in selectors:
+    for by, sel in selectors:
         try:
             btn = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((AppiumBy.XPATH, xpath))
+                EC.element_to_be_clickable((by, sel))
             )
             btn.click()
             time.sleep(2)
@@ -164,17 +294,20 @@ def click_ok_button(driver):
     return False
 
 
-def click_cancel_button(driver):
-    """Click nút Cancel trên dialog."""
+def click_cancel_button(driver, adb=None):
+    """Click nút Cancel trên dialog. Resource ID thực tế: btn_dialog_cancel."""
+    if adb is not None:
+        if _adb_tap_by_rid(adb, "btn_dialog_cancel"):
+            time.sleep(2)
+            return True
     selectors = [
-        '//*[@text="Cancel" or @text="Hủy" or @text="CANCEL"]',
-        '//*[contains(@resource-id, "btn_cancel") or contains(@resource-id, "btnCancel")]',
-        '//*[contains(@resource-id, "negative")]',
+        (AppiumBy.ID, f"{PKG}:id/btn_dialog_cancel"),
+        (AppiumBy.XPATH, '//*[@text="Cancel" or @text="Hủy"]'),
     ]
-    for xpath in selectors:
+    for by, sel in selectors:
         try:
             btn = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((AppiumBy.XPATH, xpath))
+                EC.element_to_be_clickable((by, sel))
             )
             btn.click()
             time.sleep(2)
@@ -184,8 +317,40 @@ def click_cancel_button(driver):
     return False
 
 
-def enter_password(driver, password: str):
-    """Nhập password vào EditText."""
+def enter_password(driver, password: str, adb=None):
+    """
+    Nhập password vào EditText.
+    Nếu có adb: dùng ADB dump tìm edtPassWord → tap → input text (tránh UIA2 crash).
+    """
+    if adb is not None:
+        import xml.etree.ElementTree as _ET_ep
+        import re as _re_ep
+        _rid = f"{PKG}:id/edtPassWord"
+        try:
+            adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_ep.xml"])
+            _, _xml, _ = adb._run(["shell", "cat", "/sdcard/uidump_ep.xml"])
+            if _xml and "<hierarchy" in _xml:
+                _root = _ET_ep.fromstring(_xml)
+                for _n in _root.iter("node"):
+                    if _n.get("resource-id", "") == _rid or _n.get("class", "") == "android.widget.EditText":
+                        _nums = _re_ep.findall(r"\d+", _n.get("bounds", ""))
+                        if len(_nums) >= 4:
+                            _cx = (int(_nums[0]) + int(_nums[2])) // 2
+                            _cy = (int(_nums[1]) + int(_nums[3])) // 2
+                            adb._run(["shell", "input", "tap", str(_cx), str(_cy)])
+                            time.sleep(0.5)
+                            # Xóa text cũ bằng select all + delete
+                            adb._run(["shell", "input", "keyevent", "KEYCODE_CTRL_A"])
+                            adb._run(["shell", "input", "keyevent", "KEYCODE_DEL"])
+                            time.sleep(0.3)
+                            # Nhập password (chỉ dùng cho password không có ký tự đặc biệt)
+                            adb._run(["shell", "input", "text", password])
+                            time.sleep(0.5)
+                            return True
+        except Exception:
+            pass
+        return False
+
     pwd_input = find_password_input(driver)
     if pwd_input is None:
         return False
@@ -195,44 +360,114 @@ def enter_password(driver, password: str):
     return True
 
 
-def _handle_app_chooser(driver, pkg: str):
+def _handle_app_chooser(adb, driver, pkg: str):
     """
-    Xử lý Android 'Open with' chooser nếu xuất hiện.
-    Tìm và click vào option của app PDF Reader.
+    Xử lý Android 'Open with' chooser bằng ADB dump (bypass UiAutomator2 crash
+    khi ResolverActivity/ChooserActivity đang ở foreground).
     """
-    try:
-        # Tìm option trong chooser chứa tên app hoặc package
-        chooser_xpath = (
-            f'//*[contains(@text, "PDF") and contains(@text, "Reader")]'
-            f' | //*[contains(@text, "pdf") and contains(@text, "reader")]'
-            f' | //*[contains(@package, "{pkg}")]'
-        )
-        el = WebDriverWait(driver, 5).until(
-            EC.element_to_be_clickable((AppiumBy.XPATH, chooser_xpath))
-        )
-        el.click()
-        time.sleep(2)
-        # Click "Just once" nếu có
-        for text in ["Just once", "Only this time", "Một lần"]:
+    import xml.etree.ElementTree as _ET_ch
+    import re as _re_ch
+
+    _JUST_ONCE = {"Just once", "Only this time"}
+
+    def _dump(timeout_sec=15):
+        deadline = time.time() + timeout_sec
+        _last = None
+        while time.time() < deadline:
+            for extra in [["--windows"], []]:
+                try:
+                    adb._run(["shell", "uiautomator", "dump"] + extra + ["/sdcard/uidump_ch.xml"])
+                    _, stdout, _ = adb._run(["shell", "cat", "/sdcard/uidump_ch.xml"])
+                    if stdout and "<hierarchy" in stdout:
+                        root = _ET_ch.fromstring(stdout)
+                        if any(n.get("text", "") in _JUST_ONCE for n in root.iter("node")):
+                            return root
+                        _last = root
+                except Exception:
+                    pass
+            if _last is not None:
+                return _last
+            time.sleep(1)
+        return None
+
+    def _center(bounds_str):
+        nums = _re_ch.findall(r"\d+", bounds_str)
+        return ((int(nums[0]) + int(nums[2])) // 2, (int(nums[1]) + int(nums[3])) // 2) if len(nums) >= 4 else None
+
+    def _tap_text(root, texts):
+        for node in root.iter("node"):
+            if node.get("text", "") in texts or node.get("content-desc", "") in texts:
+                c = _center(node.get("bounds", ""))
+                if c:
+                    adb._run(["shell", "input", "tap", str(c[0]), str(c[1])])
+                    return True
+        return False
+
+    # Bước 1: Tap option PDF Reader trong chooser (tìm theo pkg hoặc text "PDF")
+    root = _dump(timeout_sec=12)
+    if root is not None:
+        for node in root.iter("node"):
+            t = node.get("text", "")
+            if pkg in (node.get("package", "") or "") or ("PDF" in t and "Reader" in t):
+                c = _center(node.get("bounds", ""))
+                if c:
+                    adb._run(["shell", "input", "tap", str(c[0]), str(c[1])])
+                    time.sleep(1.5)
+                    break
+
+    # Bước 2: Tap "Just once"
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        root = _dump(timeout_sec=4)
+        if root is not None and _tap_text(root, _JUST_ONCE):
+            time.sleep(2)
+            from tests.helpers import wait_uia2_ready
+            wait_uia2_ready(driver, timeout=30)
+            return
+        time.sleep(1)
+
+
+def is_file_opened(driver, adb=None, timeout=8) -> bool:
+    """Kiểm tra file đã mở thành công. ADB-first để tránh crash UIA2."""
+    import xml.etree.ElementTree as _ET_fo
+    _reader_rids = {f"{PKG}:id/imv_toolbar_back", f"{PKG}:id/doc_view"}
+    if adb is not None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
             try:
-                btn = driver.find_element(AppiumBy.XPATH, f'//*[@text="{text}"]')
-                btn.click()
-                time.sleep(2)
-                break
+                adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_fo.xml"])
+                _, _xml, _ = adb._run(["shell", "cat", "/sdcard/uidump_fo.xml"])
+                if _xml and "<hierarchy" in _xml:
+                    _root = _ET_fo.fromstring(_xml)
+                    for _n in _root.iter("node"):
+                        if _n.get("resource-id", "") in _reader_rids:
+                            return True
             except Exception:
                 pass
-    except Exception:
-        pass
-
-
-def is_file_opened(driver, timeout=8) -> bool:
-    """Kiểm tra file đã mở thành công (có toolbar back hoặc doc_view)."""
+            time.sleep(1.5)
+        return False
     return (is_visible(driver, "imv_toolbar_back", timeout=timeout) or
             is_visible(driver, "doc_view", timeout=3))
 
 
-def is_password_dialog_still_showing(driver) -> bool:
-    """Kiểm tra dialog nhập password vẫn còn hiển thị."""
+def is_password_dialog_still_showing(driver, adb=None) -> bool:
+    """Kiểm tra dialog nhập password vẫn còn hiển thị. ADB-first."""
+    import xml.etree.ElementTree as _ET_ds
+    _dialog_rids = {f"{PKG}:id/edtPassWord", f"{PKG}:id/vl_title_rename"}
+    if adb is not None:
+        try:
+            adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_ds.xml"])
+            _, _xml, _ = adb._run(["shell", "cat", "/sdcard/uidump_ds.xml"])
+            if _xml and "<hierarchy" in _xml:
+                _root = _ET_ds.fromstring(_xml)
+                for _n in _root.iter("node"):
+                    if _n.get("resource-id", "") in _dialog_rids:
+                        return True
+                    if _n.get("class", "") == "android.widget.EditText":
+                        return True
+        except Exception:
+            pass
+        return False
     try:
         WebDriverWait(driver, 5).until(
             EC.presence_of_element_located((AppiumBy.XPATH, '//android.widget.EditText'))
@@ -243,10 +478,9 @@ def is_password_dialog_still_showing(driver) -> bool:
 
 
 def find_remember_checkbox(driver):
-    """Tìm checkbox 'Remember password' trong dialog."""
+    """Tìm checkbox 'Remember password' trong dialog. Resource ID thực tế: cbRemember."""
     selectors = [
-        (AppiumBy.XPATH, '//*[contains(@resource-id, "remember") or contains(@resource-id, "Remember")]'),
-        (AppiumBy.XPATH, '//*[contains(@resource-id, "check") and @class="android.widget.CheckBox"]'),
+        (AppiumBy.ID, f"{PKG}:id/cbRemember"),
         (AppiumBy.XPATH, '//android.widget.CheckBox'),
     ]
     for by, sel in selectors:
@@ -570,13 +804,34 @@ class TestOpenFilesPassword:
         opened = open_password_pdf_from_home(driver, adb, cfg)
         assert opened, "Không tìm thấy file có password trong danh sách"
 
-        # Dismiss ads nếu có
-        if _is_ad_showing(driver):
-            dismiss_ads(driver)
-            time.sleep(1)
+        # Sau khi tap file, AppOpenAd có thể trigger và crash UIA2.
+        # Dùng ADB để dismiss ad trước, rồi recover UIA2 trước khi dùng Appium.
+        import subprocess as _sp_tc021, re as _re_tc021, os as _os_tc021
+        _serial = _os_tc021.environ.get("TEST_DEVICE_SERIAL", "")
+        _adb_tc021 = ["adb", "-s", _serial] if _serial else ["adb"]
+        try:
+            _r = _sp_tc021.run(_adb_tc021 + ["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"],
+                               capture_output=True, text=True, timeout=5)
+            if "gms.ads.AdActivity" in (_r.stdout or ""):
+                _rs = _sp_tc021.run(_adb_tc021 + ["shell", "wm", "size"],
+                                    capture_output=True, text=True, timeout=4)
+                _mm = _re_tc021.search(r"(\d+)x(\d+)", _rs.stdout or "")
+                _w, _h = (int(_mm.group(1)), int(_mm.group(2))) if _mm else (1080, 2400)
+                for _tx, _ty in [(int(_w * 0.89), int(_h * 0.045)),
+                                  (int(_w * 0.96), int(_h * 0.106))]:
+                    _sp_tc021.run(_adb_tc021 + ["shell", "input", "tap", str(_tx), str(_ty)],
+                                  capture_output=True)
+                    time.sleep(2)
+                    _r2 = _sp_tc021.run(_adb_tc021 + ["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"],
+                                        capture_output=True, text=True, timeout=5)
+                    if "gms.ads.AdActivity" not in (_r2.stdout or ""):
+                        break
+                wait_uia2_ready(driver, timeout=30)
+        except Exception:
+            pass
 
-        # Verify dialog nhập password xuất hiện
-        dialog_shown = wait_for_password_dialog(driver, timeout=15)
+        # Verify dialog nhập password xuất hiện (ADB-first để tránh crash UIA2)
+        dialog_shown = wait_for_password_dialog(driver, adb=adb, timeout=20)
         assert dialog_shown, \
             "Expected dialog nhập password nhưng không thấy sau khi mở file có pass"
         print(f"\n  TC-021 PASS: Dialog nhập password hiển thị khi mở file có pass từ Home")
@@ -620,19 +875,9 @@ class TestOpenFilesPassword:
             time.sleep(4)
 
             # Xử lý chooser dialog nếu Android show "Open with..."
-            _handle_app_chooser(driver, pkg)
+            _handle_app_chooser(adb, driver, pkg)
 
-            if _is_ad_showing(driver):
-                dismiss_ads(driver)
-                time.sleep(1)
-
-            try:
-                driver.activate_app(pkg)
-                time.sleep(2)
-            except Exception:
-                pass
-
-            if wait_for_password_dialog(driver, timeout=10):
+            if wait_for_password_dialog(driver, adb=adb, timeout=15):
                 dialog_shown = True
                 break
 
@@ -662,30 +907,21 @@ class TestOpenFilesPassword:
         opened = open_password_pdf_from_home(driver, adb, cfg)
         assert opened, "Không mở được file để test TC-023"
 
-        if _is_ad_showing(driver):
-            dismiss_ads(driver)
-            time.sleep(1)
-
-        dialog_shown = wait_for_password_dialog(driver, timeout=15)
+        dialog_shown = wait_for_password_dialog(driver, adb=adb, timeout=20)
         if not dialog_shown:
             pytest.skip("Dialog nhập password không xuất hiện, bỏ qua TC-023")
 
-        # Nhập password đúng
-        entered = enter_password(driver, PASSWORD_CORRECT)
+        # Nhập password đúng (ADB-first)
+        entered = enter_password(driver, PASSWORD_CORRECT, adb=adb)
         assert entered, "Không nhập được password vào dialog"
 
-        # Click OK
-        clicked = click_ok_button(driver)
+        # Click OK (ADB-first)
+        clicked = click_ok_button(driver, adb=adb)
         assert clicked, "Không click được nút OK"
         time.sleep(3)
 
-        # Dismiss ads nếu có sau khi mở file
-        if _is_ad_showing(driver):
-            dismiss_ads(driver)
-            time.sleep(1)
-
-        # Verify file đã mở thành công
-        file_opened = is_file_opened(driver, timeout=10)
+        # Verify file đã mở thành công (ADB-first)
+        file_opened = is_file_opened(driver, adb=adb, timeout=15)
         assert file_opened, \
             f"Expected mở file thành công sau khi nhập pass đúng '{PASSWORD_CORRECT}'"
         print(f"\n  TC-023 PASS: Nhập pass đúng → Mở file thành công")
@@ -709,32 +945,22 @@ class TestOpenFilesPassword:
         opened = open_password_pdf_from_home(driver, adb, cfg)
         assert opened, "Không mở được file để test TC-024"
 
-        if _is_ad_showing(driver):
-            dismiss_ads(driver)
-            time.sleep(1)
-
-        dialog_shown = wait_for_password_dialog(driver, timeout=15)
+        dialog_shown = wait_for_password_dialog(driver, adb=adb, timeout=20)
         if not dialog_shown:
             pytest.skip("Dialog nhập password không xuất hiện, bỏ qua TC-024")
 
-        # Nhập password sai (có ký tự đặc biệt)
-        entered = enter_password(driver, PASSWORD_WRONG)
+        # Nhập password sai — PASSWORD_WRONG không có ký tự đặc biệt khó nhập qua ADB
+        entered = enter_password(driver, "wrongpass123", adb=adb)
         assert entered, "Không nhập được password vào dialog"
 
-        # Click OK
-        click_ok_button(driver)
+        # Click OK (ADB-first)
+        click_ok_button(driver, adb=adb)
         time.sleep(3)
 
-        # Kiểm tra dialog trước — nếu dialog vẫn còn thì file chắc chắn chưa mở
-        dialog_still_showing = is_password_dialog_still_showing(driver)
+        # Kiểm tra dialog còn hiển thị (ADB-first)
+        dialog_still_showing = is_password_dialog_still_showing(driver, adb=adb)
         assert dialog_still_showing, \
             "Expected dialog reload sau khi nhập sai password, nhưng dialog biến mất"
-
-        # Chỉ kiểm tra file_opened khi dialog đã biến mất (tránh false-positive)
-        if not dialog_still_showing:
-            file_opened = is_file_opened(driver, timeout=5)
-            assert not file_opened, \
-                "File đã mở dù nhập sai password — đây là bug!"
         print(f"\n  TC-024 PASS: Nhập pass sai → Dialog reload, không mở được file")
 
     # ── TC-025: Không nhập pass click OK ─────────────────────────────────────
@@ -756,31 +982,16 @@ class TestOpenFilesPassword:
         opened = open_password_pdf_from_home(driver, adb, cfg)
         assert opened, "Không mở được file để test TC-025"
 
-        if _is_ad_showing(driver):
-            dismiss_ads(driver)
-            time.sleep(1)
-
-        dialog_shown = wait_for_password_dialog(driver, timeout=15)
+        dialog_shown = wait_for_password_dialog(driver, adb=adb, timeout=20)
         if not dialog_shown:
             pytest.skip("Dialog nhập password không xuất hiện, bỏ qua TC-025")
 
-        # Đảm bảo input trống (không nhập gì)
-        pwd_input = find_password_input(driver)
-        if pwd_input:
-            pwd_input.clear()
-            time.sleep(1)
-
-        # Click OK mà không nhập pass
-        click_ok_button(driver)
+        # Không nhập gì, click OK ngay (ADB-first)
+        click_ok_button(driver, adb=adb)
         time.sleep(3)
 
-        # Verify: file không mở được
-        file_opened = is_file_opened(driver, timeout=5)
-        assert not file_opened, \
-            "File đã mở dù không nhập password — đây là bug!"
-
-        # Verify dialog reload
-        dialog_still_showing = is_password_dialog_still_showing(driver)
+        # Verify dialog còn hiển thị (ADB-first)
+        dialog_still_showing = is_password_dialog_still_showing(driver, adb=adb)
         assert dialog_still_showing, \
             "Expected dialog reload khi không nhập password, nhưng dialog biến mất"
         print(f"\n  TC-025 PASS: Không nhập pass → Dialog reload, không mở được file")

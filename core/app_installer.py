@@ -56,7 +56,8 @@ class AppInstaller:
         print("\n[SETUP] Khởi động app để init data...")
         self.adb.launch_app(self.package_name, activity)
         time.sleep(launch_timeout)
-        self.adb.force_stop_app(self.package_name)
+        # self.adb.force_stop_app(self.package_name)
+        
         print("  [OK] App đã init data xong")
 
     def get_apk_list(self, apks_dir: str) -> list[str]:
