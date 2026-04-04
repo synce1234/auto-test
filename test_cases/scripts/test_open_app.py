@@ -21,7 +21,7 @@ from appium.webdriver.common.appiumby import AppiumBy
 from tests.helpers import (
     find, is_visible, rid,
     dismiss_ads, _is_ad_showing,
-    dismiss_onboarding,
+    dismiss_onboarding2,
 )
 from test_cases.tc_manager import TCManager
 

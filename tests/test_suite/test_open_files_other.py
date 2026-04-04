@@ -857,17 +857,65 @@ def _powermenu_opened_after(adb, count_before: int, timeout: int = 5) -> bool:
     return False
 
 
-def _check_reader_toolbar(driver, expected_ids: list, timeout=15) -> list:
+def _check_reader_toolbar(driver, expected_ids: list) -> list:
     """
     Kiểm tra các toolbar elements có hiển thị sau khi reader mở.
+    Dùng ADB uiautomator dump làm primary — nhanh và không bị ảnh hưởng bởi
+    auto-hide timer hay Appium context (WebView vs NATIVE_APP).
     Trả về list các ID bị thiếu (không tìm thấy).
     """
-    time.sleep(3)  # Chờ toolbar render
-    missing = []
-    for res_id in expected_ids:
-        if not is_visible(driver, res_id, timeout=timeout):
-            missing.append(res_id)
-        timeout = 5  # Chỉ timeout dài cho element đầu tiên
+    import subprocess as _sp, os as _os, re as _re2
+    time.sleep(2)  # Chờ toolbar render
+
+    _serial = _os.environ.get("TEST_DEVICE_SERIAL", "")
+    _adb_t = ["adb", "-s", _serial] if _serial else ["adb"]
+
+    def _dump_xml() -> str:
+        try:
+            _fname = f"/sdcard/toolbar_{int(time.time()*1000)}.xml"
+            _sp.run(_adb_t + ["shell", "uiautomator", "dump", _fname],
+                    capture_output=True, timeout=8)
+            _r = _sp.run(_adb_t + ["pull", _fname, "/tmp/toolbar_check.xml"],
+                         capture_output=True, text=True, timeout=5)
+            _sp.run(_adb_t + ["shell", "rm", "-f", _fname], capture_output=True, timeout=3)
+            if _r.returncode != 0:
+                return ""
+            with open("/tmp/toolbar_check.xml", "r", errors="replace") as _f:
+                return _f.read()
+        except Exception:
+            return ""
+
+    def _ids_in_xml(xml: str) -> set:
+        """Trả về set các resource-id short name có trong dump."""
+        _full = _re2.findall(r'resource-id="[^"]*:id/([^"]+)"', xml)
+        return set(_full)
+
+    # Tap màn hình để đảm bảo toolbar hiện (reset auto-hide)
+    try:
+        _sz = driver.get_window_size()
+        driver.tap([(_sz["width"] // 2, _sz["height"] // 2)])
+        time.sleep(0.8)
+    except Exception:
+        pass
+
+    # Thử dump tối đa 3 lần (toolbar có thể ẩn ngay sau khi tap)
+    _found_ids: set = set()
+    for _attempt in range(3):
+        _xml = _dump_xml()
+        if _xml:
+            _found_ids = _ids_in_xml(_xml)
+            if all(eid in _found_ids for eid in expected_ids):
+                break
+        if _attempt < 2:
+            # Tap lại để hiện toolbar rồi dump ngay
+            try:
+                driver.tap([(_sz["width"] // 2, _sz["height"] // 2)])
+                time.sleep(0.5)
+            except Exception:
+                pass
+
+    missing = [eid for eid in expected_ids if eid not in _found_ids]
+    print(f"  [TOOLBAR] found={sorted(_found_ids & set(expected_ids))} missing={missing}")
     return missing
 
 
@@ -1603,6 +1651,14 @@ class TestOpenFilesOther:
 
         reader_open = _wait_reader_open(driver, timeout=25)
         assert reader_open, "Reader không mở sau khi click file EPUB"
+
+        # Tap giữa màn hình để wake up toolbar nếu đã auto-hide
+        try:
+            size = driver.get_window_size()
+            driver.tap([(size["width"] // 2, size["height"] // 2)])
+            time.sleep(1)
+        except Exception:
+            pass
 
         always_visible_ids = [
             "imv_toolbar_back",
@@ -2750,10 +2806,10 @@ def _onboarding_deny_manage_files(driver, cfg):
 def _onboarding_allow_manage_files(driver, cfg):
     """
     Đi qua onboarding lần đầu và ĐỒNG Ý quyền manage all files.
-    Dùng dismiss_onboarding chuẩn (đã grant tất cả permission).
+    Dùng dismiss_onboarding2 chuẩn (đã grant tất cả permission).
     """
-    from tests.helpers import dismiss_onboarding
-    return dismiss_onboarding(driver, cfg)
+    from tests.helpers import dismiss_onboarding2
+    return dismiss_onboarding2(driver, cfg)
 
 
 # ─── TC-012 đến TC-016: Welcome File & Selection Screen ───────────────────────

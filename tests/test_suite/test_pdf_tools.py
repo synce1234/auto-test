@@ -10,7 +10,7 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from tests.helpers import (
     find, find_all, is_visible, rid,
-    go_to_home, dismiss_onboarding, _is_ad_showing, _safe_dismiss_open_app_ad,
+    go_to_home, dismiss_onboarding2, _is_ad_showing, _safe_dismiss_open_app_ad,
     open_fab_menu, close_fab_menu,
 )
 
@@ -23,7 +23,7 @@ class TestPDFTools:
         if _is_ad_showing(driver):
             _safe_dismiss_open_app_ad(driver)
             time.sleep(1)
-        dismiss_onboarding(driver, cfg)
+        dismiss_onboarding2(driver, cfg)
         go_to_home(driver, cfg)
         # Đảm bảo FAB menu đóng (có thể còn mở từ test trước)
         close_fab_menu(driver)

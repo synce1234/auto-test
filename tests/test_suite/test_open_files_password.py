@@ -162,69 +162,102 @@ def open_password_pdf_from_home(driver, adb, cfg):
     return False
 
 
-def wait_for_password_dialog(driver, adb=None, timeout=15) -> bool:
+def wait_for_password_dialog(driver, adb=None, timeout=15) -> bool:  # noqa: ARG001 adb kept for call-site compat
     """
     Chờ dialog nhập password xuất hiện.
-    Ưu tiên ADB dump (resource-id edtPassWord) để tránh crash UIA2 khi AppOpenAd trigger sau
-    khi file được tap.
+    Primary: ADB dump (subprocess trực tiếp, unique filename) — tránh crash UIA2.
+    Fallback: Appium WebDriverWait.
     """
-    import xml.etree.ElementTree as _ET_pwd
+    import subprocess as _sp_pwd
     import re as _re_pwd
 
-    _pwd_rid = f"{PKG}:id/edtPassWord"
-    _pwd_title_rid = f"{PKG}:id/vl_title_rename"
+    _serial = os.environ.get("TEST_DEVICE_SERIAL", "")
+    _adb_pw = ["adb", "-s", _serial] if _serial else ["adb"]
 
-    if adb is not None:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            # Nếu AdActivity đang focused → dismiss trước khi dump
-            try:
-                _, _focus, _ = adb._run(["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"])
-                if "gms.ads.AdActivity" in (_focus or ""):
-                    _, _ws, _ = adb._run(["shell", "wm", "size"])
-                    _mm = _re_pwd.search(r"(\d+)x(\d+)", _ws or "")
-                    _w, _h = (int(_mm.group(1)), int(_mm.group(2))) if _mm else (1080, 2400)
-                    for _tx, _ty in [(int(_w * 0.89), int(_h * 0.045)),
-                                     (int(_w * 0.96), int(_h * 0.106))]:
-                        adb._run(["shell", "input", "tap", str(_tx), str(_ty)])
-                        time.sleep(2)
-                        _, _f2, _ = adb._run(["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"])
-                        if "gms.ads.AdActivity" not in (_f2 or ""):
-                            break
-                    time.sleep(1)
-                    continue
-            except Exception:
-                pass
-            # Dump UI tìm dialog password
-            try:
-                adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_pwd_dlg.xml"])
-                _, _xml, _ = adb._run(["shell", "cat", "/sdcard/uidump_pwd_dlg.xml"])
-                if _xml and "<hierarchy" in _xml:
-                    _root = _ET_pwd.fromstring(_xml)
-                    for _n in _root.iter("node"):
-                        _rid = _n.get("resource-id", "")
-                        if _rid in (_pwd_rid, _pwd_title_rid):
-                            return True
-                        # Fallback: EditText với hint "Enter Password"
-                        if (_n.get("class", "") == "android.widget.EditText"
-                                and "password" in _n.get("password", "false").lower()):
-                            return True
-            except Exception:
-                pass
-            time.sleep(1.5)
+    def _focused_window() -> str:
+        """Lấy mCurrentFocus qua dumpsys activity activities (không dùng pipe)."""
+        try:
+            r = _sp_pwd.run(_adb_pw + ["shell", "dumpsys", "activity", "activities"],
+                            capture_output=True, text=True, timeout=8)
+            for line in (r.stdout or "").splitlines():
+                if "mCurrentFocus" in line:
+                    return line.strip()
+        except Exception:
+            pass
+        return ""
+
+    def _dump_xml_pwd() -> str:
+        """Dump UI hierarchy với unique filename để tránh stale cache."""
+        try:
+            _fname = f"/sdcard/pwd_dlg_{int(time.time()*1000)}.xml"
+            _sp_pwd.run(_adb_pw + ["shell", "uiautomator", "dump", _fname],
+                        capture_output=True, timeout=8)
+            r = _sp_pwd.run(_adb_pw + ["pull", _fname, "/tmp/pwd_dlg_check.xml"],
+                            capture_output=True, text=True, timeout=5)
+            _sp_pwd.run(_adb_pw + ["shell", "rm", "-f", _fname],
+                        capture_output=True, timeout=3)
+            if r.returncode != 0:
+                return ""
+            with open("/tmp/pwd_dlg_check.xml", "r", errors="replace") as _f:
+                return _f.read()
+        except Exception:
+            return ""
+
+    def _xml_has_password_dialog(xml: str) -> bool:
+        """Kiểm tra XML có chứa dialog password không."""
+        if not xml:
+            return False
+        # edtPassWord — EditText nhập password
+        if f"{PKG}:id/edtPassWord" in xml:
+            return True
+        # EditText với password=true
+        if _re_pwd.search(r'class="android\.widget\.EditText"[^>]*password="true"', xml):
+            return True
+        # Text gợi ý password
+        if _re_pwd.search(r'(Enter Password|Enter password|Nhập mật khẩu|Password)', xml):
+            return True
         return False
 
-    # Appium fallback (khi không có adb)
+    def _dismiss_ad_if_needed():
+        focus = _focused_window()
+        if "AdActivity" not in focus:
+            return False
+        try:
+            r = _sp_pwd.run(_adb_pw + ["shell", "wm", "size"],
+                            capture_output=True, text=True, timeout=5)
+            m = _re_pwd.search(r"(\d+)x(\d+)", r.stdout or "")
+            w, h = (int(m.group(1)), int(m.group(2))) if m else (1080, 2400)
+            for tx, ty in [(int(w * 0.89), int(h * 0.045)),
+                           (int(w * 0.96), int(h * 0.106))]:
+                _sp_pwd.run(_adb_pw + ["shell", "input", "tap", str(tx), str(ty)],
+                            capture_output=True, timeout=5)
+                time.sleep(1.5)
+                if "AdActivity" not in _focused_window():
+                    return True
+        except Exception:
+            pass
+        return False
+
+    # ── Primary: ADB loop ──────────────────────────────────────────────────────
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        _dismiss_ad_if_needed()
+        xml = _dump_xml_pwd()
+        print(f"  [PWD_DIALOG] xml_len={len(xml)}, has_dialog={_xml_has_password_dialog(xml)}, focus={_focused_window()}")
+        if _xml_has_password_dialog(xml):
+            return True
+        time.sleep(1.5)
+
+    # ── Fallback: Appium ───────────────────────────────────────────────────────
     selectors = [
         (AppiumBy.ID, f"{PKG}:id/edtPassWord"),
-        (AppiumBy.XPATH, '//*[contains(@text, "Password") or contains(@text, "password") or contains(@text, "Enter") or contains(@text, "Mật khẩu")]'),
+        (AppiumBy.XPATH, '//android.widget.EditText[@password="true"]'),
+        (AppiumBy.XPATH, '//*[contains(@text, "Password") or contains(@text, "password") or contains(@text, "Mật khẩu")]'),
         (AppiumBy.XPATH, '//android.widget.EditText'),
     ]
     for by, sel in selectors:
         try:
-            WebDriverWait(driver, timeout).until(
-                EC.presence_of_element_located((by, sel))
-            )
+            WebDriverWait(driver, 5).until(EC.presence_of_element_located((by, sel)))
             return True
         except TimeoutException:
             continue
@@ -232,40 +265,99 @@ def wait_for_password_dialog(driver, adb=None, timeout=15) -> bool:
 
 
 def find_password_input(driver):
-    """Tìm EditText để nhập password. Resource ID thực tế: edtPassWord."""
+    """
+    Tìm EditText để nhập password.
+    Trả về Appium element nếu UIA2 alive, hoặc AdbInputProxy nếu UIA2 crash.
+    """
+    import subprocess as _sp_fpi
+    import re as _re_fpi
+
+    # ── Appium primary ─────────────────────────────────────────────────────────
     selectors = [
         (AppiumBy.ID, f"{PKG}:id/edtPassWord"),
         (AppiumBy.XPATH, '//android.widget.EditText'),
     ]
     for by, sel in selectors:
         try:
-            return WebDriverWait(driver, 8).until(
+            return WebDriverWait(driver, 5).until(
                 EC.presence_of_element_located((by, sel))
             )
-        except TimeoutException:
+        except (TimeoutException, Exception):
             continue
-    return None
 
+    # ── ADB fallback: trả về proxy object có send_keys() dùng ADB input text ──
+    _serial = os.environ.get("TEST_DEVICE_SERIAL", "")
+    _adb_fpi = ["adb", "-s", _serial] if _serial else ["adb"]
 
-def _adb_tap_by_rid(adb, rid_suffix: str, dump_file="/sdcard/uidump_dlg.xml") -> bool:
-    """ADB dump → tìm node theo resource-id → tap center. Trả về True nếu thành công."""
-    import xml.etree.ElementTree as _ET_tap
-    import re as _re_tap
-    _rid = f"{PKG}:id/{rid_suffix}"
+    # Tap vào edtPassWord để focus trước khi gõ
     try:
-        adb._run(["shell", "uiautomator", "dump", dump_file])
-        _, _xml, _ = adb._run(["shell", "cat", dump_file])
-        if not _xml or "<hierarchy" not in _xml:
+        _fname_fpi = f"/sdcard/fpi_{int(time.time()*1000)}.xml"
+        _sp_fpi.run(_adb_fpi + ["shell", "uiautomator", "dump", _fname_fpi],
+                    capture_output=True, timeout=8)
+        _r_fpi = _sp_fpi.run(_adb_fpi + ["pull", _fname_fpi, "/tmp/fpi_check.xml"],
+                             capture_output=True, text=True, timeout=5)
+        _sp_fpi.run(_adb_fpi + ["shell", "rm", "-f", _fname_fpi],
+                    capture_output=True, timeout=3)
+        if _r_fpi.returncode == 0:
+            with open("/tmp/fpi_check.xml", "r", errors="replace") as _ff:
+                _xml_fpi = _ff.read()
+            _m_fpi = _re_fpi.search(
+                r'resource-id="[^"]*edtPassWord"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"',
+                _xml_fpi,
+            )
+            if _m_fpi:
+                _cx = (int(_m_fpi.group(1)) + int(_m_fpi.group(3))) // 2
+                _cy = (int(_m_fpi.group(2)) + int(_m_fpi.group(4))) // 2
+                _sp_fpi.run(_adb_fpi + ["shell", "input", "tap", str(_cx), str(_cy)],
+                            capture_output=True, timeout=5)
+                time.sleep(0.5)
+    except Exception:
+        pass
+
+    class _AdbInputProxy:
+        """Proxy thay thế Appium element — gõ text qua ADB input text."""
+        def send_keys(self, text: str):
+            # Escape ký tự đặc biệt cho ADB shell input text
+            _escaped = str(text).replace(" ", "%s").replace("'", "\\'")
+            _sp_fpi.run(_adb_fpi + ["shell", "input", "text", _escaped],
+                        capture_output=True, timeout=10)
+        def clear(self):
+            # Xoá hết text bằng select all + delete
+            _sp_fpi.run(_adb_fpi + ["shell", "input", "keyevent", "KEYCODE_CTRL_A"],
+                        capture_output=True, timeout=5)
+            _sp_fpi.run(_adb_fpi + ["shell", "input", "keyevent", "KEYCODE_DEL"],
+                        capture_output=True, timeout=5)
+
+    return _AdbInputProxy()
+
+
+def _adb_tap_by_rid(adb, rid_suffix: str, dump_file=None) -> bool:  # noqa: adb/dump_file kept for compat
+    """ADB dump → tìm node theo resource-id → tap center. Trả về True nếu thành công."""
+    import subprocess as _sp_tap
+    import re as _re_tap
+    _serial = os.environ.get("TEST_DEVICE_SERIAL", "")
+    _adb_t = ["adb", "-s", _serial] if _serial else ["adb"]
+    try:
+        _fname_t = f"/sdcard/tap_{int(time.time()*1000)}.xml"
+        _sp_tap.run(_adb_t + ["shell", "uiautomator", "dump", _fname_t],
+                    capture_output=True, timeout=8)
+        _r_t = _sp_tap.run(_adb_t + ["pull", _fname_t, "/tmp/tap_check.xml"],
+                           capture_output=True, text=True, timeout=5)
+        _sp_tap.run(_adb_t + ["shell", "rm", "-f", _fname_t], capture_output=True, timeout=3)
+        if _r_t.returncode != 0:
             return False
-        _root = _ET_tap.fromstring(_xml)
-        for _n in _root.iter("node"):
-            if _n.get("resource-id", "") == _rid:
-                _nums = _re_tap.findall(r"\d+", _n.get("bounds", ""))
-                if len(_nums) >= 4:
-                    _cx = (int(_nums[0]) + int(_nums[2])) // 2
-                    _cy = (int(_nums[1]) + int(_nums[3])) // 2
-                    adb._run(["shell", "input", "tap", str(_cx), str(_cy)])
-                    return True
+        with open("/tmp/tap_check.xml", "r", errors="replace") as _ft:
+            _xml = _ft.read()
+        _m_t = _re_tap.search(
+            rf'resource-id="[^"]*{_re_tap.escape(rid_suffix)}"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"',
+            _xml,
+        )
+        if _m_t:
+            _cx = (int(_m_t.group(1)) + int(_m_t.group(3))) // 2
+            _cy = (int(_m_t.group(2)) + int(_m_t.group(4))) // 2
+            _sp_tap.run(_adb_t + ["shell", "input", "tap", str(_cx), str(_cy)],
+                        capture_output=True, timeout=5)
+            return True
     except Exception:
         pass
     return False
@@ -523,7 +615,7 @@ class TestRememberPassword:
     def setup_teardown(self, driver, adb, cfg):
         """Setup: pm clear app để reset SharedPreferences. Teardown: về home, xóa file."""
         # pm clear PKG: xóa toàn bộ data app (SharedPreferences, cache) để loại trừ cached password
-        adb._run(["shell", "pm", "clear", PKG])
+        # adb._run(["shell", "pm", "clear", PKG])
         time.sleep(3)  # Chờ app hoàn toàn dừng
         # Activate lại app và chờ boot xong
         try:

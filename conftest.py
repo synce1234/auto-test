@@ -140,11 +140,11 @@ def _post_create_driver_init(drv, serial: str = ""):
     # Chờ app khởi động rồi dismiss onboarding/ads best-effort
     time.sleep(CFG["device"]["launch_timeout"])
     try:
-        from tests.helpers import dismiss_onboarding, dismiss_ads, _is_ad_showing
+        from tests.helpers import dismiss_onboarding2, dismiss_ads, _is_ad_showing
         if _is_ad_showing(drv):
             dismiss_ads(drv)
             time.sleep(1)
-        dismiss_onboarding(drv, CFG)
+        dismiss_onboarding2(drv, CFG)
     except Exception as e:
         _log(f"[DRIVER] init/onboarding warning (recovery): {e}")
 
@@ -223,7 +223,7 @@ def driver():
 
     # Init đầy đủ như trước (giữ hành vi cũ cho lần tạo driver đầu tiên)
     try:
-        from tests.helpers import dismiss_onboarding, dismiss_ads, _is_ad_showing
+        from tests.helpers import dismiss_onboarding2, dismiss_ads, _is_ad_showing
         run_init = os.environ.get("RUN_INIT", "0") == "1"
         if run_init:
             print("\n  [INIT] Chạy bước khởi tạo app...")
@@ -238,29 +238,9 @@ def driver():
                 print(f"  [INIT] POST_NOTIFICATIONS: {(_r_notif.stdout + _r_notif.stderr).strip() or 'ok'}")
             except Exception as _e_notif:
                 print(f"  [INIT] POST_NOTIFICATIONS failed: {_e_notif}")
-            print("  [INIT] Dismiss ads lần đầu launch...")
-            for _ in range(3):
-                dismissed = dismiss_ads(proxy)
-                if not dismissed:
-                    break
-                time.sleep(1)
-            print("  [INIT] Bỏ qua màn hình chọn ngôn ngữ, cấp quyền, dismiss ads...")
-            dismiss_onboarding(proxy, CFG)
-            print("  [INIT] Onboarding hoàn thành ✓")
-            try:
-                proxy.terminate_app(pkg)
-            except Exception:
-                # subprocess.run(adb_prefix + ["shell", "am", "force-stop", pkg], capture_output=True)
-                pass
-            time.sleep(1)
-            print("  [INIT] Đã kill app ✓")
-            
-            try:
-                proxy.activate_app(pkg)
-                time.sleep(2)
-                print("  [INIT] Đã activate lại app ✓")
-            except Exception:
-                pass
+            # dismiss_onboarding2 = app_init: tự xử lý activate → ads → onboarding → kill → relaunch
+            ok = dismiss_onboarding2(proxy, CFG)
+            print(f"  [INIT] Onboarding {'hoàn thành ✓' if ok else 'timeout (tiếp tục)'}")
             print("  [INIT] Chờ UiAutomator2 sẵn sàng...")
             _adb_recover_home(serial)
             _wait_uia2_ready(proxy, timeout=40)
@@ -269,22 +249,18 @@ def driver():
             if _is_ad_showing(proxy):
                 dismiss_ads(proxy)
                 time.sleep(1)
-                
             try:
                 proxy.terminate_app(pkg)
             except Exception:
-                # subprocess.run(adb_prefix + ["shell", "am", "force-stop", pkg], capture_output=True)
                 pass
             time.sleep(1)
             print("  [INIT] Đã kill app ✓")
-            
             try:
                 proxy.activate_app(pkg)
                 time.sleep(2)
                 print("  [INIT] Đã activate lại app ✓")
             except Exception:
                 pass
-            # dismiss_onboarding(proxy, CFG)
     except Exception as e:
         print(f"\n  [DRIVER] init/onboarding warning: {e}")
         if os.environ.get("RUN_INIT", "0") == "1":
@@ -648,6 +624,8 @@ def video_recorder(driver, request):
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_call(item):
     """Map @pytest.mark.tc_id marker → TCManager để update Excel/HTML dashboard."""
+    tc_id_log = _tc_id_from_item(item) or item.name
+    print(f"\n{'─' * 20} Đang chạy {tc_id_log} {'─' * 20}")
     start = time.time()
     outcome = yield
     duration = time.time() - start
@@ -713,7 +691,7 @@ def pytest_runtest_makereport(item, call):
             drv.save_screenshot(path)
             print(f"\n  [SCREENSHOT] {path}")
         except Exception as e:
-            print(f"\n  [SCREENSHOT FAILED]")
+            # print(f"\n  [SCREENSHOT FAILED]")
             # Fallback: UiAutomator2 có thể crash → dùng ADB screencap để vẫn có ảnh
             try:
                 serial = os.environ.get("TEST_DEVICE_SERIAL", "")

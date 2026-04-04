@@ -10,7 +10,7 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from tests.helpers import (
     find, find_all, find_text_contains, is_visible, rid,
-    go_to_home, dismiss_onboarding, _is_ad_showing, _safe_dismiss_open_app_ad,
+    go_to_home, dismiss_onboarding2, _is_ad_showing, _safe_dismiss_open_app_ad,
     ensure_app_foreground,
 )
 
@@ -26,7 +26,7 @@ class TestDataMigration:
         if _is_ad_showing(driver):
             _safe_dismiss_open_app_ad(driver)
             time.sleep(1)
-        dismiss_onboarding(driver, cfg)
+        dismiss_onboarding2(driver, cfg)
         go_to_home(driver, cfg)
 
     # ── 1. File list còn nguyên ──────────────────────────────────────────────
@@ -154,7 +154,7 @@ class TestDataMigration:
             time.sleep(1)
 
         # Dismiss onboarding nếu có
-        dismiss_onboarding(driver, cfg)
+        dismiss_onboarding2(driver, cfg)
 
         # Đảm bảo về Home (go_to_home tự handle ad + back navigation)
         go_to_home(driver, cfg)

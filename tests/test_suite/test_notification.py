@@ -26,7 +26,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from tests.helpers import (
     find, find_all, is_visible, rid,
-    go_to_home, dismiss_onboarding, dismiss_ads, _is_ad_showing,
+    go_to_home, dismiss_onboarding2, dismiss_ads, _is_ad_showing,
     ensure_app_foreground,
 )
 

@@ -430,64 +430,211 @@ def _adb_back_if_settings() -> bool:
     return False
 
 
-def go_to_home(driver, cfg: dict):
-    """Navigate về màn hình Home. Dismiss ad, onboarding và re-launch app nếu cần."""
-    # Xử lý kẹt ở Settings "All files access" trước khi làm bất cứ điều gì
-    _adb_back_if_settings()
+def _is_home_screen(driver, serial: str = "") -> bool:
+    """
+    Kiểm tra đang ở Home fragment (tab "All" — danh sách tất cả file).
+    Cần có cả rcv_all_file VÀ layoutAll (tab header của Home fragment).
+    rcv_all_file xuất hiện ở cả file browser fragment nên không đủ để phân biệt.
+    """
+    _adb_h = ["adb", "-s", serial] if serial else ["adb"]
+    try:
+        _fname_h = f"/sdcard/home_{int(time.time()*1000)}.xml"
+        subprocess.run(_adb_h + ["shell", "uiautomator", "dump", _fname_h],
+                       capture_output=True, timeout=8)
+        _r_h = subprocess.run(_adb_h + ["pull", _fname_h, "/tmp/home_check.xml"],
+                              capture_output=True, text=True, timeout=5)
+        subprocess.run(_adb_h + ["shell", "rm", "-f", _fname_h], capture_output=True, timeout=3)
+        if _r_h.returncode == 0:
+            with open("/tmp/home_check.xml", "r", errors="replace") as _fh:
+                _xml_h = _fh.read()
+            # layoutAll là tab "All" chỉ xuất hiện ở Home fragment, không có ở file browser
+            if "rcv_all_file" in _xml_h and "layoutAll" in _xml_h:
+                return True
+    except Exception:
+        pass
+    # Appium fallback
+    try:
+        return bool(find(driver, "rcv_all_file", timeout=2) and find(driver, "layoutAll", timeout=1))
+    except Exception:
+        return False
 
-    ensure_app_foreground(driver, cfg)
 
-    # Sau activate_app, AppOpenAd có thể crash UIA2 → dismiss bằng ADB trước khi dùng Appium
-    if _adb_dismiss_ad_if_active():
-        wait_uia2_ready(driver, timeout=20)
+def _adb_click_by_id(serial: str, resource_id: str) -> bool:
+    """
+    Tìm element theo resource-id trong ADB dump và tap vào tâm của nó.
+    Trả về True nếu tap thành công.
+    """
+    _adb_c = ["adb", "-s", serial] if serial else ["adb"]
+    try:
+        _fname_c = f"/sdcard/click_{int(time.time()*1000)}.xml"
+        subprocess.run(_adb_c + ["shell", "uiautomator", "dump", _fname_c],
+                       capture_output=True, timeout=8)
+        _r_c = subprocess.run(_adb_c + ["pull", _fname_c, "/tmp/click_tmp.xml"],
+                              capture_output=True, text=True, timeout=5)
+        subprocess.run(_adb_c + ["shell", "rm", "-f", _fname_c], capture_output=True, timeout=3)
+        if _r_c.returncode != 0:
+            return False
+        with open("/tmp/click_tmp.xml", "r", errors="replace") as _fc2:
+            _xml_c = _fc2.read()
+        _m_c = re.search(
+            rf'resource-id="[^"]*{re.escape(resource_id)}"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"',
+            _xml_c,
+        )
+        if not _m_c:
+            return False
+        _cx = (int(_m_c.group(1)) + int(_m_c.group(3))) // 2
+        _cy = (int(_m_c.group(2)) + int(_m_c.group(4))) // 2
+        subprocess.run(_adb_c + ["shell", "input", "tap", str(_cx), str(_cy)],
+                       capture_output=True, timeout=5)
+        return True
+    except Exception:
+        return False
 
-    for _ in range(5):
-        # ADB back nếu vẫn còn kẹt Settings trong quá trình loop
+
+def go_to_home(driver, cfg: dict) -> bool:
+    """
+    Navigate về màn hình Home (rcv_all_file — danh sách file).
+
+    Luồng cố định:
+      1. HOME keyevent (về launcher)
+      2. Kill app
+      3. Mở lại app
+      4. Loop: dismiss ads / notification dialog / rating dialog / Settings →
+         kiểm tra rcv_all_file bằng ADB dump (không phụ thuộc UIA2)
+    """
+    serial = os.environ.get("TEST_DEVICE_SERIAL", "")
+    pkg = cfg["app"]["package_name"]
+    _adb_g = ["adb", "-s", serial] if serial else ["adb"]
+
+    # 1. Về launcher
+    subprocess.run(_adb_g + ["shell", "input", "keyevent", "3"],
+                   capture_output=True, timeout=5)
+    time.sleep(1)
+
+    # 2. Kill app
+    try:
+        driver.terminate_app(pkg)
+    except Exception:
+        subprocess.run(_adb_g + ["shell", "am", "force-stop", pkg],
+                       capture_output=True, timeout=5)
+    time.sleep(1)
+
+    # 3. Mở lại app
+    try:
+        driver.activate_app(pkg)
+    except Exception:
+        subprocess.run(
+            _adb_g + ["shell", "monkey", "-p", pkg,
+                      "-c", "android.intent.category.LAUNCHER", "1"],
+            capture_output=True, timeout=8,
+        )
+    time.sleep(3)
+
+    # 4. Loop dismiss + check Home
+    for _i in range(10):
+        # Settings "All files access" — back bằng ADB
         _adb_back_if_settings()
-        # Dismiss ad nếu đang show
-        if _is_ad_showing(driver):
-            dismiss_ads(driver)
-            time.sleep(1)
-            continue
-        
-        if is_visible(driver, "imv_close_rate", timeout=2):
-            btn = find(driver, "imv_close_rate")
-            if btn is not None:
-                btn.click()
-                time.sleep(1)
 
-        if is_visible(driver, "rcv_all_file", timeout=2):
-            return True
-
-        # Xử lý Language screen (onboarding)
-        if is_visible(driver, "btn_continue", timeout=2):
-            btn = find(driver, "btn_continue")
-            if btn is not None:
-                btn.click()
-            time.sleep(2)
+        # Dismiss ad (ADB primary — không crash UIA2)
+        if _adb_dismiss_ad_if_active():
+            time.sleep(1.5)
             continue
 
-        # Xử lý Permission dialog
-        if is_visible(driver, "btnDialogConfirm", timeout=2):
-            btn = find(driver, "btnDialogConfirm")
-            if btn is not None:
-                btn.click()
-            time.sleep(2)
-            try:
-                driver.activate_app(cfg["app"]["package_name"])
-                time.sleep(2)
-            except Exception:
-                pass
-            continue
-
+        # Dismiss ad (Appium fallback)
         try:
-            driver.back()
-            time.sleep(1)
+            if _is_ad_showing(driver):
+                dismiss_ads(driver)
+                time.sleep(1)
+                continue
         except Exception:
             pass
 
-    ensure_app_foreground(driver, cfg)
-    return is_visible(driver, "rcv_all_file", timeout=5)
+        # Đã ở Home? (ADB dump primary, Appium fallback)
+        if _is_home_screen(driver, serial):
+            # Tap layoutAll để chắc chắn đang ở Home fragment (không phải file browser)
+            _adb_click_by_id(serial, "layoutAll")
+            time.sleep(0.5)
+            _log(f"[GO_HOME] Home reached (iter={_i+1}) ✓")
+            return True
+
+        # Notification permission dialog (Android 13+)
+        _clicked = (
+            _adb_click_by_id(serial, "permission_allow_button")
+            or _adb_click_by_id(serial, "permission_deny_button")  # deny cũng được, miễn thoát
+        )
+        if not _clicked:
+            try:
+                _allow = driver.find_element(
+                    "xpath",
+                    '//*[@resource-id="com.android.permissioncontroller:id/permission_allow_button"]'
+                    ' | //*[@text="Allow"] | //*[@text="While using the app"]',
+                )
+                _allow.click()
+                _clicked = True
+            except Exception:
+                pass
+        if _clicked:
+            time.sleep(1.5)
+            continue
+
+        # imv_close_rate (rating dialog)
+        _clicked_rate = _adb_click_by_id(serial, "imv_close_rate")
+        if not _clicked_rate:
+            try:
+                if is_visible(driver, "imv_close_rate", timeout=1):
+                    btn = find(driver, "imv_close_rate")
+                    if btn:
+                        btn.click()
+                        _clicked_rate = True
+            except Exception:
+                pass
+        if _clicked_rate:
+            time.sleep(1)
+            continue
+
+        # btn_continue (language/onboarding)
+        _clicked_cont = _adb_click_by_id(serial, "btn_continue")
+        if not _clicked_cont:
+            try:
+                if is_visible(driver, "btn_continue", timeout=1):
+                    btn = find(driver, "btn_continue")
+                    if btn:
+                        btn.click()
+                        _clicked_cont = True
+            except Exception:
+                pass
+        if _clicked_cont:
+            time.sleep(2)
+            continue
+
+        # btnDialogConfirm (permission dialog trong onboarding)
+        _clicked_perm = _adb_click_by_id(serial, "btnDialogConfirm")
+        if not _clicked_perm:
+            try:
+                if is_visible(driver, "btnDialogConfirm", timeout=1):
+                    btn = find(driver, "btnDialogConfirm")
+                    if btn:
+                        btn.click()
+                        _clicked_perm = True
+            except Exception:
+                pass
+        if _clicked_perm:
+            time.sleep(2)
+            continue
+
+        # Không match → back
+        try:
+            driver.back()
+        except Exception:
+            subprocess.run(_adb_g + ["shell", "input", "keyevent", "4"],
+                           capture_output=True, timeout=5)
+        time.sleep(1)
+
+    if _is_home_screen(driver, serial):
+        _adb_click_by_id(serial, "layoutAll")
+        time.sleep(0.5)
+        return True
+    return False
 
 
 def open_fab_menu(driver):
@@ -563,6 +710,40 @@ def dismiss_onboarding(driver, cfg: dict):
         """Kiểm tra có phải màn All files access không (theo text, không theo package)."""
         return any(t in xml for t in _SETTINGS_TEXTS)
 
+    def _get_focused_window_ob() -> str:
+        """
+        Lấy mCurrentFocus từ dumpsys activity activities.
+        Chú ý: dumpsys window windows không có mCurrentFocus trên một số Android version —
+        dùng dumpsys activity activities thay thế.
+        """
+        try:
+            r = subprocess.run(
+                _adb_ob + ["shell", "dumpsys", "activity", "activities"],
+                capture_output=True, text=True, timeout=8,
+            )
+            for line in (r.stdout or "").splitlines():
+                if "mCurrentFocus" in line or "mFocusedApp" in line:
+                    return line.strip()
+        except Exception:
+            pass
+        return ""
+
+    def _is_settings_foreground_ob() -> bool:
+        """Kiểm tra Settings 'All files access' có đang ở foreground không."""
+        focus = _get_focused_window_ob()
+        return bool(focus) and (
+            "settings" in focus.lower() or "permissioncontroller" in focus.lower()
+        )
+
+    def _is_ad_activity_ob() -> bool:
+        """Kiểm tra AdActivity (Google Ads) có đang foreground không."""
+        focus = _get_focused_window_ob()
+        return bool(focus) and "adactivity" in focus.lower()
+
+    def _check_settings_closed_ob() -> bool:
+        """Kiểm tra Settings đã đóng chưa."""
+        return not _is_settings_foreground_ob()
+
     def _adb_back_ob():
         """Nhấn BACK bằng ADB."""
         try:
@@ -591,55 +772,108 @@ def dismiss_onboarding(driver, cfg: dict):
         _time_left = int(deadline - time.time())
         _log(f"[ONBOARD iter={_iter_ob}] bắt đầu, còn {_time_left}s")
 
-        # 0. ADB dump screen → detect "All files access" bằng text.
-        #    Dump XML reuse cho cả step 4 để tránh dump 2 lần/iteration.
+        # 0. Detect Settings "All files access":
+        #    - Ưu tiên: dumpsys window (luôn hoạt động, kể cả khi uiautomator dump fail)
+        #    - Fallback: parse text từ XML dump
+        _focused_win = _get_focused_window_ob()
+        _log(f"[ONBOARD iter={_iter_ob}] focused_window='{_focused_win}'")
         _xml_ob = _adb_dump_xml_ob()
         _log(f"[ONBOARD iter={_iter_ob}] dump ok, xml_len={len(_xml_ob)}")
 
-        if _is_settings_screen_ob(_xml_ob):
+        _on_settings = (
+            _is_settings_foreground_ob()  # primary: dumpsys window
+            or _is_settings_screen_ob(_xml_ob)  # fallback: XML text
+        )
+
+        if _on_settings:
             if _settings_granted:
-                # Đã grant rồi mà app vẫn redirect → back 2 lần + relaunch
                 _log(f"[ONBOARD iter={_iter_ob}] step0: Settings lại sau khi đã grant → back×2 + relaunch")
                 _adb_back_ob()
                 _adb_back_ob()
                 _adb_launch_app_ob()
             else:
-                # Lần đầu gặp Settings → click toggle + back
-                _log(f"[ONBOARD iter={_iter_ob}] step0: 'All files access' detected → tap toggle + back")
-                _sw_matches = list(re.finditer(r'class="android\.widget\.Switch"[^/]*/>', _xml_ob))
-                _log(f"[ONBOARD iter={_iter_ob}] found {len(_sw_matches)} Switch element(s) in dump")
-                _tapped = False
-                for _sw_m in _sw_matches:
-                    _sw_node = _sw_m.group(0)
-                    if 'checked="false"' in _sw_node:
-                        _bm = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', _sw_node)
-                        if _bm:
-                            _tcx = (int(_bm.group(1)) + int(_bm.group(3))) // 2
-                            _tcy = (int(_bm.group(2)) + int(_bm.group(4))) // 2
-                            subprocess.run(_adb_ob + ["shell", "input", "tap", str(_tcx), str(_tcy)],
-                                           capture_output=True, timeout=5)
-                            _log(f"[ONBOARD iter={_iter_ob}] tapped toggle at ({_tcx},{_tcy})")
-                            time.sleep(1)
-                            _tapped = True
-                        break
-                if not _tapped:
-                    # XML không có Switch → thử tap theo wm size
-                    _log(f"[ONBOARD iter={_iter_ob}] toggle not in XML → tap via wm size")
-                    try:
-                        _r_wm0 = subprocess.run(_adb_ob + ["shell", "wm", "size"],
-                                                capture_output=True, text=True, timeout=5)
-                        _wm0 = re.search(r"(\d+)x(\d+)", _r_wm0.stdout or "")
-                        _sw0, _sh0 = (int(_wm0.group(1)), int(_wm0.group(2))) if _wm0 else (1080, 2400)
-                    except Exception:
-                        _sw0, _sh0 = 1080, 2400
-                    for _ty0 in [0.33, 0.37, 0.41, 0.45]:
-                        subprocess.run(
-                            _adb_ob + ["shell", "input", "tap",
-                                       str(int(_sw0 * 0.88)), str(int(_sh0 * _ty0))],
-                            capture_output=True, timeout=5,
-                        )
-                        time.sleep(0.8)
-                _adb_back_ob()
+                _log(f"[ONBOARD iter={_iter_ob}] step0: Settings detected → tap toggle")
+                # Lấy screen size
+                try:
+                    _r_wm0 = subprocess.run(_adb_ob + ["shell", "wm", "size"],
+                                            capture_output=True, text=True, timeout=5)
+                    _wm0 = re.search(r"(\d+)x(\d+)", _r_wm0.stdout or "")
+                    _sw0, _sh0 = (int(_wm0.group(1)), int(_wm0.group(2))) if _wm0 else (1080, 2400)
+                except Exception:
+                    _sw0, _sh0 = 1080, 2400
+                _log(f"[ONBOARD iter={_iter_ob}] screen={_sw0}x{_sh0}")
+
+                # Thử tap từ Switch bounds trong XML trước (nếu dump có dữ liệu)
+                _tapped_and_closed = False
+                if _xml_ob:
+                    _sw_matches = list(re.finditer(
+                        r'<node[^>]*class="android\.widget\.Switch[^"]*"[^>]*/>', _xml_ob))
+                    _log(f"[ONBOARD iter={_iter_ob}] found {len(_sw_matches)} Switch(es) in XML")
+                    for _sw_m in _sw_matches:
+                        _sw_node = _sw_m.group(0)
+                        if 'checked="false"' in _sw_node:
+                            _bm = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', _sw_node)
+                            if _bm:
+                                _tcx = (int(_bm.group(1)) + int(_bm.group(3))) // 2
+                                _tcy = (int(_bm.group(2)) + int(_bm.group(4))) // 2
+                                subprocess.run(_adb_ob + ["shell", "input", "tap", str(_tcx), str(_tcy)],
+                                               capture_output=True, timeout=5)
+                                time.sleep(1.5)
+                                _log(f"[ONBOARD iter={_iter_ob}] XML bounds tap ({_tcx},{_tcy})")
+                                if _check_settings_closed_ob():
+                                    _log(f"[ONBOARD iter={_iter_ob}] Settings closed after XML tap ✓")
+                                    _tapped_and_closed = True
+                            break
+
+                if not _tapped_and_closed:
+                    # Tap theo tọa độ: thử nhiều vị trí toggle (X~88%) và text row (X~40%)
+                    # Y range rộng (15%–50%) để cover các kích thước màn hình khác nhau
+                    _y_pcts = [0.20, 0.25, 0.28, 0.30, 0.33, 0.37, 0.41, 0.45, 0.50]
+                    for _x_pct in [0.88, 0.75, 0.50, 0.40]:
+                        _tx = int(_sw0 * _x_pct)
+                        for _y_pct in _y_pcts:
+                            _ty = int(_sh0 * _y_pct)
+                            subprocess.run(
+                                _adb_ob + ["shell", "input", "tap", str(_tx), str(_ty)],
+                                capture_output=True, timeout=5,
+                            )
+                            time.sleep(0.6)
+                            _log(f"[ONBOARD iter={_iter_ob}] coord tap ({_tx},{_ty}) [{_x_pct:.0%},{_y_pct:.0%}]")
+                            if _check_settings_closed_ob():
+                                _log(f"[ONBOARD iter={_iter_ob}] Settings closed after coord tap ✓")
+                                _tapped_and_closed = True
+                                break
+                        if _tapped_and_closed:
+                            break
+
+                if not _tapped_and_closed:
+                    _log(f"[ONBOARD iter={_iter_ob}] all taps failed → press BACK anyway")
+                    _adb_back_ob()
+
+                # Grant bằng appops để đảm bảo permission được cấp
+                # (tap tọa độ có thể dismiss dialog mà không enable toggle thực sự)
+                try:
+                    _r_ops = subprocess.run(
+                        _adb_ob + ["shell", "appops", "set", pkg,
+                                   "MANAGE_EXTERNAL_STORAGE", "allow"],
+                        capture_output=True, text=True, timeout=8,
+                    )
+                    _log(f"[ONBOARD iter={_iter_ob}] appops set MANAGE_EXTERNAL_STORAGE allow: "
+                         f"{(_r_ops.stdout + _r_ops.stderr).strip() or 'ok'}")
+                except Exception as _e_ops:
+                    _log(f"[ONBOARD iter={_iter_ob}] appops set failed: {_e_ops}")
+
+                # Force-stop Settings để xóa activity khỏi task stack của app
+                # (Settings launched via startActivityForResult còn sống dù app bị kill)
+                try:
+                    subprocess.run(
+                        _adb_ob + ["shell", "am", "force-stop", "com.android.settings"],
+                        capture_output=True, timeout=5,
+                    )
+                    _log(f"[ONBOARD iter={_iter_ob}] force-stop com.android.settings ✓")
+                except Exception:
+                    pass
+
                 _settings_granted = True
             continue
 
@@ -652,74 +886,23 @@ def dismiss_onboarding(driver, cfg: dict):
 
         # 1. App chưa ở foreground
         if current_pkg != pkg:
-            if "settings" in current_pkg.lower() or "permissioncontroller" in current_pkg.lower():
-                if _settings_granted:
-                    _log(f"[ONBOARD iter={_iter_ob}] step1: Settings lại sau khi đã grant → back×2 + relaunch")
-                    _adb_back_ob()
-                    _adb_back_ob()
-                    _adb_launch_app_ob()
-                else:
-                    _log(f"[ONBOARD iter={_iter_ob}] step1: Settings detected → find text row + tap")
-                    # uiautomator dump fail khi Settings foreground → tính tọa độ từ wm size thực
-                    try:
-                        _r_wm = subprocess.run(
-                            _adb_ob + ["shell", "wm", "size"],
-                            capture_output=True, text=True, timeout=5,
-                        )
-                        _wm = re.search(r"(\d+)x(\d+)", _r_wm.stdout or "")
-                        _sw, _sh = (int(_wm.group(1)), int(_wm.group(2))) if _wm else (1080, 2400)
-                    except Exception:
-                        _sw, _sh = 1080, 2400
-                    _log(f"[ONBOARD iter={_iter_ob}] screen={_sw}x{_sh}")
+            _log(f"[ONBOARD iter={_iter_ob}] step1: app not foreground (pkg={current_pkg}) → activate")
+            try:
+                driver.activate_app(pkg)
+                time.sleep(2)
+            except Exception:
+                _adb_launch_app_ob()
+            continue
 
-                    def _check_settings_closed():
-                        try:
-                            return "settings" not in (driver.current_package or "").lower()
-                        except Exception:
-                            return False
-
-                    # Bước 1: click vào vùng TEXT "Allow access to manage..." (X~40%)
-                    # Clicking vào text row cũng toggle được switch, không nhất thiết phải click đúng toggle
-                    _text_x = int(_sw * 0.40)
-                    for _ty_pct in [0.33, 0.37, 0.41, 0.45]:
-                        _tap_y = int(_sh * _ty_pct)
-                        subprocess.run(
-                            _adb_ob + ["shell", "input", "tap", str(_text_x), str(_tap_y)],
-                            capture_output=True, timeout=5,
-                        )
-                        _log(f"[ONBOARD iter={_iter_ob}] text-row tap ({_text_x},{_tap_y}) [{_ty_pct:.0%}]")
-                        time.sleep(0.8)
-                        if _check_settings_closed():
-                            _log(f"[ONBOARD iter={_iter_ob}] Settings closed → toggle enabled ✓")
-                            _settings_granted = True
-                            break
-                    else:
-                        # Bước 2: thử lại ở vùng toggle (X~88%) nếu text-row tap không work
-                        _toggle_x = int(_sw * 0.88)
-                        for _ty_pct2 in [0.33, 0.37, 0.41, 0.45]:
-                            _tap_y2 = int(_sh * _ty_pct2)
-                            subprocess.run(
-                                _adb_ob + ["shell", "input", "tap", str(_toggle_x), str(_tap_y2)],
-                                capture_output=True, timeout=5,
-                            )
-                            _log(f"[ONBOARD iter={_iter_ob}] toggle tap ({_toggle_x},{_tap_y2}) [{_ty_pct2:.0%}]")
-                            time.sleep(0.8)
-                            if _check_settings_closed():
-                                _log(f"[ONBOARD iter={_iter_ob}] Settings closed → toggle enabled ✓")
-                                _settings_granted = True
-                                break
-                        else:
-                            _log(f"[ONBOARD iter={_iter_ob}] all taps failed → press BACK")
-                            _adb_back_ob()
-                            _settings_granted = True
-                    continue
-            else:
-                _log(f"[ONBOARD iter={_iter_ob}] step1: app not foreground (pkg={current_pkg}) → activate")
-                try:
-                    driver.activate_app(pkg)
-                    time.sleep(2)
-                except Exception:
-                    _adb_launch_app_ob()
+        # 1b. AdActivity đang foreground → dismiss ad rồi tiếp tục
+        if _is_ad_activity_ob():
+            _log(f"[ONBOARD iter={_iter_ob}] step1b: AdActivity detected → dismiss ad")
+            from tests.helpers import dismiss_ads as _dismiss_ads_ob
+            try:
+                _dismiss_ads_ob(driver)
+            except Exception:
+                pass
+            time.sleep(2)
             continue
 
         # 2. Đã ở home → xong
@@ -872,6 +1055,11 @@ def app_init(driver, cfg: dict) -> bool:
 
     time.sleep(1)
     return result
+
+
+# Alias — phiên bản mới của dismiss_onboarding: full init flow (activate + onboarding + cleanup + kill + relaunch)
+dismiss_onboarding2 = app_init
+
 
 def _load_config():
     import yaml
