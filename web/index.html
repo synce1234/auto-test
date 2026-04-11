@@ -367,6 +367,7 @@ select option { background: var(--surface); }
         <span>Console Output</span>
         <div style="display:flex;gap:6px;align-items:center;">
           <a id="run-open-report" href="#" target="_blank" class="btn btn-ghost" style="padding:3px 10px;font-size:11px;display:none;">↗ Xem Report</a>
+          <button id="btn-tc-rerun-failed" class="btn btn-ghost" style="padding:3px 10px;font-size:11px;color:var(--red);border-color:var(--red);display:none;" onclick="rerunFailedTc()">↺ Chạy lại FAILED</button>
           <button class="btn btn-ghost" style="padding:3px 10px;font-size:11px;" onclick="clearConsole()">Clear</button>
         </div>
       </div>
@@ -854,6 +855,8 @@ function clearConsole() {
 
 // ── Test Cases Tab ─────────────────────────────────────────────────────────────
 let _allTc = [], _filteredTc = [], _tcSse = null, _tcRunning = false;
+let _lastRunCtx = null;   // { device, apkFilenames, runInit, nodeIds }
+let _failedNodeIds = [];  // nodeids của các TC FAILED trong lần chạy gần nhất
 
 const _TC_STATUS_STYLE = {
   'PASS':         'background:rgba(34,197,94,.15);color:#22c55e;',
@@ -1001,6 +1004,11 @@ async function runSelectedTc() {
   // Switch to Run tab
   switchTab('run');
 
+  // Lưu context để rerun sau này
+  _lastRunCtx = { device, apkFilenames, runInit, nodeIds };
+  _failedNodeIds = [];
+  document.getElementById('btn-tc-rerun-failed').style.display = 'none';
+
   // Start run
   clearConsole();
   document.getElementById('run-open-report').style.display = 'none';
@@ -1020,7 +1028,12 @@ async function runSelectedTc() {
   _sse.onmessage = e => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'ping') return;
-    if (msg.type === 'log')  appendLog(msg.text);
+    if (msg.type === 'log') {
+      appendLog(msg.text);
+      // Bắt FAILED lines của pytest: "FAILED tests/xxx.py::Class::test_yyy - ..."
+      const m = msg.text.match(/^FAILED\s+(tests\/\S+?)(?: - .*)?$/);
+      if (m) _failedNodeIds.push(m[1]);
+    }
     if (msg.type === 'done') {
       _tcRunning = false;
       setRunning(false); _sse.close(); _sse = null;
@@ -1030,6 +1043,14 @@ async function runSelectedTc() {
       document.getElementById('status-text').style.color = ok ? 'var(--green)' : 'var(--red)';
       document.getElementById('run-meta').textContent =
         ok ? `✓ Hoàn thành — ${selectedIds.length} TC` : `✗ Kết thúc lỗi — ${selectedIds.length} TC`;
+      // Hiện nút "Chạy lại FAILED" nếu có TC fail
+      const rerunBtn = document.getElementById('btn-tc-rerun-failed');
+      if (_failedNodeIds.length > 0) {
+        rerunBtn.textContent = `↺ Chạy lại ${_failedNodeIds.length} FAILED`;
+        rerunBtn.style.display = 'inline-flex';
+      } else {
+        rerunBtn.style.display = 'none';
+      }
       setTimeout(async () => {
         try {
           const rr = await fetch('/api/reports');
@@ -1050,6 +1071,64 @@ async function runSelectedTc() {
 async function stopTcRun() {
   await fetch('/api/run/stop', { method: 'POST' });
   toast('Đã gửi lệnh dừng', 'info');
+}
+
+async function rerunFailedTc() {
+  if (_tcRunning) return;
+  if (!_failedNodeIds.length) { toast('Không có TC FAILED nào', 'err'); return; }
+  if (!_lastRunCtx) { toast('Không có thông tin lần chạy trước', 'err'); return; }
+
+  const { device, apkFilenames, runInit } = _lastRunCtx;
+  const nodeIds = [..._failedNodeIds];
+
+  appendLog(`[INFO] Chạy lại ${nodeIds.length} TC FAILED...`);
+  _failedNodeIds = [];
+  document.getElementById('btn-tc-rerun-failed').style.display = 'none';
+
+  const r = await fetch('/api/run', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device, scripts: nodeIds, install_apks: apkFilenames, run_init: runInit }),
+  });
+  const d = await r.json();
+  if (!d.ok) { toast(d.error || 'Không thể bắt đầu', 'err'); return; }
+  _tcRunning = true;
+  setRunning(true);
+  _sse = new EventSource('/api/run/stream');
+  _sse.onmessage = e => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'ping') return;
+    if (msg.type === 'log') {
+      appendLog(msg.text);
+      const m = msg.text.match(/^FAILED\s+(tests\/\S+?)(?: - .*)?$/);
+      if (m) _failedNodeIds.push(m[1]);
+    }
+    if (msg.type === 'done') {
+      _tcRunning = false;
+      setRunning(false); _sse.close(); _sse = null;
+      const ok = msg.code === 0;
+      toast(ok ? '✓ Rerun hoàn thành' : `✗ Rerun kết thúc (code ${msg.code})`, ok ? 'ok' : 'err');
+      const rerunBtn = document.getElementById('btn-tc-rerun-failed');
+      if (_failedNodeIds.length > 0) {
+        rerunBtn.textContent = `↺ Chạy lại ${_failedNodeIds.length} FAILED`;
+        rerunBtn.style.display = 'inline-flex';
+      } else {
+        rerunBtn.style.display = 'none';
+      }
+      setTimeout(async () => {
+        try {
+          const rr = await fetch('/api/reports');
+          const rs = await rr.json();
+          if (rs.length) {
+            const btn = document.getElementById('run-open-report');
+            btn.href = `/reports/${rs[0].filename}`;
+            btn.style.display = 'inline-flex';
+          }
+        } catch(_) {}
+        loadTestcases();
+      }, 2500);
+    }
+  };
+  _sse.onerror = () => { if (_tcRunning) { _tcRunning = false; setRunning(false); appendLog('[SSE disconnected]'); } };
 }
 
 function _setTcRunning(yes) {

@@ -338,6 +338,9 @@ def api_start_run():
     env["PYTHONUNBUFFERED"] = "1"  # flush print() ngay lập tức trong subprocess
     if device_serial:
         env["TEST_DEVICE_SERIAL"] = device_serial
+    # Truyền APK được chỉ định cho các test cần fresh install (TC012–TC015, ...)
+    if install_apks:
+        env["INSTALL_APK"] = install_apks[0]
 
     def _run_thread():
         global _run_active, _run_proc

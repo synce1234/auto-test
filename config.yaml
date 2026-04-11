@@ -3,6 +3,7 @@ app:
   main_activity: com.simple.pdf.reader.ui.main.SplashScreenActivity
 apks:
   dir: apks
+  file: Pdf2.7.0_2394.apk
 device:
   exclude: []
   launch_timeout: 15
@@ -11,8 +12,8 @@ appium:
   host: 127.0.0.1
   port: 4723
 test:
-  screenshot_on_failure: false
-  record_video: false
+  screenshot_on_failure: true
+  record_video: true
   video_save_mode: always
   video_quality: low
   step_delay: 1

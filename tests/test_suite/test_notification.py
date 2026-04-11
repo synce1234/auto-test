@@ -24,11 +24,13 @@ import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+from tests.utils.robust_driver import RobustDriver
 from tests.helpers import (
     find, find_all, is_visible, rid,
-    go_to_home, dismiss_onboarding2, dismiss_ads, _is_ad_showing,
+    go_to_home, app_init, dismiss_ads, _is_ad_showing,
     ensure_app_foreground,
 )
+from tests.test_suite.test_open_files_other import _fresh_install, _safe_dismiss_open_app_ad, _handle_chooser, _wait_reader_open
 
 PKG = "pdf.reader.pdf.viewer.all.document.reader.office.viewer"
 
@@ -511,6 +513,24 @@ class TestNotification:
     Test notification feature theo TC-001 đến TC-010.
     """
 
+    @pytest.fixture(autouse=True)
+    def _setup_before_test(self, adb):
+        """Chạy trước mỗi test: xóa file test trên device, rồi nhấn Home."""
+        _dirs = "/sdcard/Download /sdcard/Documents /sdcard/Document /sdcard/DCIM /sdcard"
+        _exts = "pdf doc docx xls xlsx ppt pptx txt epub svg html"
+        _rm_cmd = (
+            f"for d in {_dirs}; do "
+            f"for ext in {_exts}; do "
+            'rm -f "$d"/*.$ext 2>/dev/null; '
+            "done; done; true"
+        )
+        try:
+            adb._run(["shell", _rm_cmd], timeout=60)
+        except Exception:
+            pass
+        adb._run(["shell", "input", "keyevent", "3"])  # KEYCODE_HOME
+        time.sleep(0.5)
+
     # ── TC-001: Don't allow notification permission ──────────────────────────
 
     @pytest.mark.tc_id("TC-NTF-001")
@@ -682,37 +702,80 @@ class TestNotification:
         """
         pkg = cfg["app"]["package_name"]
 
-        # Đảm bảo notification được bật
-        go_to_home(driver, cfg)
+        # Gỡ + cài lại APK đúng bản đang chọn (INSTALL_APK / apks.file trong config), xóa data app
+        installed = _fresh_install(adb, cfg)
+        assert installed, "Không cài được APK"
+        # Chạy lại app_init (helpers.py): launch → dismiss onboarding → kill app (chuẩn sau cài mới)
+        assert app_init(driver, cfg), "app_init không hoàn thành sau fresh install"
 
         # Xóa tất cả notifications hiện tại
         clear_all_notifications(driver)
 
         # Đảm bảo app ở home
         ensure_app_foreground(driver, cfg)
+        time.sleep(5)
+        _safe_dismiss_open_app_ad(driver, adb)
 
         # Background app
         background_app(driver)
         time.sleep(2)
 
-        # Force gửi exit notification qua ADB broadcast (thay vì chờ 9AM/10PM)
-        force_exit_notification(adb, pkg, alarm_type=10342)  # TYPE_EXIT_9
-
-        # Kiểm tra notification (tìm title "Don't miss it" hoặc content "Read All Files")
-        noti_found = wait_for_notification(driver, "Don't miss it", timeout=15)
-        if not noti_found:
-            noti_found = wait_for_notification(driver, "Read All Files", timeout=10)
-
-        # Restore app
+        # Về home và mở notification bar để chụp ảnh xác nhận
         try:
-            driver.activate_app(pkg)
-            time.sleep(2)
+            adb.run(["shell", "input", "keyevent", "KEYCODE_HOME"])
+            time.sleep(1)
+           
         except Exception:
             pass
+        # Chụp screenshot bằng ADB (tránh Appium crash khi notification shade mở)
+        try:
+            rdriver = RobustDriver(driver).configure_recovery(adb=adb)
+            if rdriver.open_notification_shade():
+                time.sleep(1)
+        except Exception:
+            pass
+        # Sleep 3s sau đó kiểm tra notification text (dùng RobustDriver)
+        time.sleep(3)
+        ok_noti = False
+        try:
+            rdriver = RobustDriver(driver).configure_recovery(adb=adb)
+            # đảm bảo shade đang mở (best-effort)
+            try:
+                rdriver.open_notification_shade()
+                time.sleep(1)
+            except Exception:
+                pass
 
-        assert noti_found, \
-            "Không tìm thấy silent notification 'Don't miss it' sau khi background app"
-        print(f"\n  TC-005 PASS: Silent noti 'Don't miss it' hiện thị")
+            # đọc page_source để verify text
+            for _ in range(2):
+                try:
+                    src = (rdriver.page_source or "").lower()
+                    ok_noti = ("don't miss it".lower() in src) and ("read all files with pdf reader".lower() in src)
+                    break
+                except Exception as e:
+                    if getattr(rdriver, "_is_uia2_crash")(e):
+                        serial = os.environ.get("TEST_DEVICE_SERIAL", "")
+                        rdriver.restart_appium_server(int(os.environ.get("APPIUM_PORT", "4723")), serial)
+                        # recreate session best-effort
+                        try:
+                            getattr(rdriver, "_try_recreate_driver_after_restart")()
+                        except Exception:
+                            pass
+                        try:
+                            rdriver.open_notification_shade()
+                            time.sleep(1)
+                        except Exception:
+                            pass
+                        continue
+                    break
+        except Exception:
+            ok_noti = False
+
+        assert ok_noti, "Không tìm thấy notification chứa 'Don't miss it' và 'Read All Files With PDF Reader'"
+
+        print(f"\n  TC-005 PASS: App không có file nào, close/background app hiện noti silent\n")
+
+        # pytest.skip("NEED CONFIRM: Kiểm tra screenshot — notification 'Don't miss it' có hiện không?")
 
     # ── TC-006: Silent noti - file in-progress <100% từ Home ────────────────
 
@@ -724,6 +787,7 @@ class TestNotification:
           Title: 📚<tên file>.pdf
           Description: 📚Don't miss it. Complete Reading Now + Nút Open
         """
+        # TODO: push 1 file vào để test và trigger scan , hãy tham khảo test open file others
         pkg = cfg["app"]["package_name"]
         go_to_home(driver, cfg)
 
@@ -749,15 +813,8 @@ class TestNotification:
         file_name = target.text
         target.click()
         time.sleep(3)
-
-        # Dismiss ad nếu có
-        try:
-            from tests.helpers import dismiss_ads, _is_ad_showing
-            if _is_ad_showing(driver):
-                dismiss_ads(driver)
-                time.sleep(1)
-        except Exception:
-            pass
+ 
+        RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
 
         # Đọc một chút (không 100%) rồi close file
         if is_visible(driver, "imv_toolbar_back", timeout=8):
@@ -780,13 +837,6 @@ class TestNotification:
             noti_found = wait_for_notification(driver, "Don't miss it", timeout=10)
         if not noti_found:
             noti_found = wait_for_notification(driver, "Read All Files", timeout=10)
-
-        # Restore app
-        try:
-            driver.activate_app(pkg)
-            time.sleep(2)
-        except Exception:
-            pass
 
         assert noti_found, \
             f"Không tìm thấy silent notification cho file '{file_name}' sau khi background"
@@ -816,6 +866,10 @@ class TestNotification:
         adb.push_file(test_pdf_local, remote_path)
         time.sleep(1)
 
+        # Đưa về màn hình home trước khi mở file từ intent (simulate app khác)
+        adb._run(["shell", "input", "keyevent", "3"])  # KEYCODE_HOME
+        time.sleep(1)
+
         # 1. Mở file từ intent (simulate app khác)
         adb._run([
             "shell", "am", "start",
@@ -825,18 +879,11 @@ class TestNotification:
         ])
         time.sleep(3)
 
-        # Xử lý dialog "Open with..." nếu có
-        handle_open_with_chooser(driver)
-        time.sleep(3)
+        # Xử lý dialog "Open with..." nếu có (ResolverActivity/ChooserActivity)
+        _handle_chooser(adb, driver)
 
-        # Dismiss ads nếu có (chỉ dùng XPATH, không dùng fallback tap)
-        from tests.helpers import _is_ad_showing, dismiss_ads
-        for _ in range(3):
-            if is_visible(driver, "doc_view", timeout=3) or is_visible(driver, "imv_toolbar_back", timeout=2):
-                break
-            if _is_ad_showing(driver):
-                dismiss_ads(driver)
-                time.sleep(2)
+        # Dismiss ads nếu có
+        RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
 
         # 2. Đọc file một chút (<100%) rồi close file
         if is_visible(driver, "doc_view", timeout=8):
@@ -860,12 +907,6 @@ class TestNotification:
         noti_found = wait_for_notification(driver, "Complete Reading Now", timeout=30)
         if not noti_found:
             noti_found = wait_for_notification(driver, "Don't miss it", timeout=15)
-
-        try:
-            driver.activate_app(pkg)
-            time.sleep(2)
-        except Exception:
-            pass
 
         if not noti_found:
             open_notification_shade(driver)
@@ -909,14 +950,7 @@ class TestNotification:
         target.click()
         time.sleep(3)
 
-        # Dismiss ad nếu có
-        try:
-            from tests.helpers import dismiss_ads, _is_ad_showing
-            if _is_ad_showing(driver):
-                dismiss_ads(driver)
-                time.sleep(1)
-        except Exception:
-            pass
+        RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
 
         # Cuộn đến cuối file để simulate đọc 100%
         if is_visible(driver, "doc_view", timeout=8):
@@ -947,13 +981,6 @@ class TestNotification:
             noti_found = wait_for_notification(driver, "Read All Files", timeout=10)
         if not noti_found:
             noti_found = wait_for_notification(driver, "Don't miss it", timeout=10)
-
-        # Restore app
-        try:
-            driver.activate_app(pkg)
-            time.sleep(2)
-        except Exception:
-            pass
 
         # Mở notification shade trước khi assert để screenshot chụp đúng trạng thái
         if not noti_found:
@@ -1001,8 +1028,8 @@ class TestNotification:
         time.sleep(3)
 
         # Xử lý dialog "Open with..." nếu có
-        handle_open_with_chooser(driver)
-        time.sleep(3)
+        _handle_chooser(adb, driver, "Just once")
+        time.sleep(10)
 
         # Dismiss ads nếu có (chỉ dùng XPATH, không dùng fallback tap)
         from tests.helpers import _is_ad_showing, dismiss_ads
@@ -1031,16 +1058,9 @@ class TestNotification:
         time.sleep(3)
 
         # Kiểm tra notification
-        noti_found = wait_for_notification(driver, "Complete Reading Now", timeout=30)
+        noti_found = wait_for_notification(driver, "Complete Reading Now", timeout=15)
         if not noti_found:
             noti_found = wait_for_notification(driver, "Don't miss it", timeout=15)
-
-        # Restore app
-        try:
-            driver.activate_app(pkg)
-            time.sleep(2)
-        except Exception:
-            pass
 
         # Mở notification shade trước khi assert để screenshot chụp đúng trạng thái
         if not noti_found:
@@ -1076,6 +1096,14 @@ class TestNotification:
         remote_path = f"/sdcard/Download/unread_test_{ts}.pdf"
         adb.push_file(test_pdf_local, remote_path)
         time.sleep(2)
+        
+        try:
+            adb._run(["shell", "am", "broadcast",
+                      "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                      "-d", f"file://{remote_path}"])
+            time.sleep(1)
+        except Exception:
+            pass
 
         # Về home
         go_to_home(driver, cfg)
@@ -1094,13 +1122,6 @@ class TestNotification:
         if not noti_found:
             noti_found = wait_for_notification(driver, "Don't miss it", timeout=15)
 
-        # Restore app
-        try:
-            driver.activate_app(pkg)
-            time.sleep(2)
-        except Exception:
-            pass
-
         # Cleanup
         adb._run(["shell", "rm", remote_path])
 
@@ -1115,7 +1136,7 @@ class TestNotification:
         """
         TC-011: Đã push noti → Bấm button Open (hoặc Read Now trên new file noti)
         Expected: Open app, chuyển đến màn đọc file tương ứng
-        Note: Dùng new file notification vì silent exit noti bị chặn bởi UIAutomator2 foreground.
+        
         """
         import datetime
         pkg = cfg["app"]["package_name"]
@@ -1126,7 +1147,6 @@ class TestNotification:
         if not os.path.exists(test_pdf_local):
             pytest.skip("Không có file test PDF (tests/resources/sample_simple.pdf)")
 
-        go_to_home(driver, cfg)
         clear_all_notifications(driver)
         adb._run(["shell", "input", "keyevent", "3"])  # HOME - background app
         time.sleep(3)
@@ -1136,41 +1156,61 @@ class TestNotification:
         adb.push_file(test_pdf_local, remote_path)
         time.sleep(2)
 
-        noti_found = wait_for_notification(driver, "You have a new file", timeout=30)
-        if not noti_found:
-            driver.activate_app(pkg)
-            adb._run(["shell", "rm", remote_path])
-            pytest.skip("Không có notification để test TC-011")
-
-        # Click nút action trên notification (Read Now cho new file noti)
-        clicked = click_notification_by_text(driver, "You have a new file", click_button_text="Read Now")
+        # Trigger media scan để app nhận diện file mới
+        try:
+            adb._run(["shell", "am", "broadcast",
+                      "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                      "-d", f"file://{remote_path}"])
+            time.sleep(1)
+        except Exception:
+            pass
+        
+        # Vào Home app, click vào file vừa push, đợi 5s rồi dismiss ads
+        file_name = os.path.basename(remote_path)
+        go_to_home(driver, cfg)
+        items = find_all(driver, "vl_item_file_name", timeout=10)
+        target = next((el for el in items if file_name.replace(".pdf", "") in el.text), None)
+        if target:
+            target.click()
+        time.sleep(5)
+        RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
+        
+        # Terminate app và đợi 3s
+        driver.terminate_app(pkg)
         time.sleep(3)
 
-        try:
-            from tests.helpers import dismiss_ads, _is_ad_showing
-            if _is_ad_showing(driver):
-                dismiss_ads(driver)
-                time.sleep(1)
-        except Exception:
-            pass
+        # Nhấn Home và đợi để app background + notification xuất hiện
+        adb._run(["shell", "input", "keyevent", "3"])  # KEYCODE_HOME
+        time.sleep(3)
+        go_to_home(driver, cfg)
+        adb._run(["shell", "input", "keyevent", "3"])  # KEYCODE_HOME
+        time.sleep(3)
+        noti_found = wait_for_notification(driver, "All Docs PDF Reader", timeout=30)
+        assert noti_found, "Không tìm thấy notification 'All Docs PDF Reader'"
 
-        try:
-            driver.activate_app(pkg)
-            time.sleep(2)
-        except Exception:
-            pass
-
-        adb._run(["shell", "rm", remote_path])
-
+        # Click nút action — thử "Read now" trước, fallback "Open"
+        
+        clicked = click_notification_by_text(driver, "All Docs PDF Reader", click_button_text="Open")
+        if not clicked:
+            adb._run(["shell", "input", "keyevent", "3"])  # KEYCODE_HOME
+            time.sleep(3)
+            clicked = click_notification_by_text(driver, "All Docs PDF Reader", click_button_text="Read now")
+        
         if not clicked:
             open_notification_shade(driver)
             time.sleep(1)
             assert False, "Không tìm thấy hoặc không click được nút action trên notification"
-
-        reading_open = is_visible(driver, "imv_toolbar_back", timeout=8)
-        home_open = is_visible(driver, "imv_home_menu_nav", timeout=5) if not reading_open else False
-        assert reading_open or home_open, \
-            "Expected mở màn đọc file hoặc home sau khi bấm nút noti"
+        time.sleep(5)
+        # Dismiss ads nếu có
+        if _is_ad_showing(driver):
+            dismiss_ads(driver)
+            #         time.sleep(1)
+        RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
+        time.sleep(5)
+        
+        reading_open = _wait_reader_open(driver, timeout=10)
+        
+        assert reading_open, "Expected mở màn đọc file hoặc home sau khi bấm nút noti"
         print(f"\n  TC-011 PASS: Bấm action button trên noti → mở app thành công")
 
     # ── TC-012: Click notification body ──────────────────────────────────────
@@ -1191,45 +1231,70 @@ class TestNotification:
         if not os.path.exists(test_pdf_local):
             pytest.skip("Không có file test PDF (tests/resources/sample_simple.pdf)")
 
-        go_to_home(driver, cfg)
         clear_all_notifications(driver)
         adb._run(["shell", "input", "keyevent", "3"])  # HOME - background app
         time.sleep(3)
 
         ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-        remote_path = f"/sdcard/Download/tc012_test_{ts}.pdf"
+        remote_path = f"/sdcard/Download/tc011_test_{ts}.pdf"
         adb.push_file(test_pdf_local, remote_path)
         time.sleep(2)
 
-        noti_found = wait_for_notification(driver, "You have a new file", timeout=30)
-        if not noti_found:
-            driver.activate_app(pkg)
-            adb._run(["shell", "rm", remote_path])
-            pytest.skip("Không có notification để test TC-012")
-
-        # Click vào body notification (không phải button)
-        clicked = click_notification_by_text(driver, "You have a new file", click_button_text=None)
-        time.sleep(3)
-
-        if not clicked:
-            adb._run(["shell", "rm", remote_path])
-            assert False, "Không tìm thấy notification để click"
-
-        # Dismiss ads nếu có
+        # Trigger media scan để app nhận diện file mới
         try:
-            from tests.helpers import dismiss_ads, _is_ad_showing
-            if _is_ad_showing(driver):
-                dismiss_ads(driver)
-                time.sleep(2)
+            adb._run(["shell", "am", "broadcast",
+                      "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                      "-d", f"file://{remote_path}"])
+            time.sleep(1)
         except Exception:
             pass
+        
+        # Vào Home app, click vào file vừa push, đợi 5s rồi dismiss ads
+        file_name = os.path.basename(remote_path)
+        go_to_home(driver, cfg)
+        items = find_all(driver, "vl_item_file_name", timeout=10)
+        target = next((el for el in items if file_name.replace(".pdf", "") in el.text), None)
+        if target:
+            target.click()
+        time.sleep(5)
+        RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
+        
+        # Terminate app và đợi 3s
+        driver.terminate_app(pkg)
+        time.sleep(3)
 
-        adb._run(["shell", "rm", remote_path])
+        # Nhấn Home và đợi để app background + notification xuất hiện
+        adb._run(["shell", "input", "keyevent", "3"])  # KEYCODE_HOME
+        time.sleep(3)
+        go_to_home(driver, cfg)
+        adb._run(["shell", "input", "keyevent", "3"])  # KEYCODE_HOME
+        time.sleep(3)
+        noti_found = wait_for_notification(driver, "All Docs PDF Reader", timeout=30)
+        assert noti_found, "Không tìm thấy notification 'All Docs PDF Reader'"
 
-        reading_open = is_visible(driver, "imv_toolbar_back", timeout=8)
-        home_open = is_visible(driver, "imv_home_menu_nav", timeout=5) if not reading_open else False
-        assert reading_open or home_open, \
-            "Expected mở app sau khi bấm vào body noti"
+        # Click nút action — thử "Read now" trước, fallback "Open"
+        
+        clicked = click_notification_by_text(driver, "All Docs PDF Reader", click_button_text="Don't miss out")
+        if not clicked:
+            adb._run(["shell", "input", "keyevent", "3"])  # KEYCODE_HOME
+            time.sleep(3)
+            clicked = click_notification_by_text(driver, "All Docs PDF Reader", click_button_text="Open")
+        
+        if not clicked:
+            open_notification_shade(driver)
+            time.sleep(1)
+            assert False, "Không tìm thấy hoặc không click được nút action trên notification"
+        time.sleep(5)
+        # Dismiss ads nếu có
+        if _is_ad_showing(driver):
+            dismiss_ads(driver)
+            #         time.sleep(1)
+        RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
+        time.sleep(5)
+        
+        reading_open = _wait_reader_open(driver, timeout=10)
+        
+        assert reading_open, "Expected mở màn đọc file hoặc home sau khi bấm nút noti"
         print(f"\n  TC-012 PASS: Bấm vào body noti → mở app thành công")
 
     # ── TC-013: Dismiss notification ─────────────────────────────────────────
@@ -1250,43 +1315,61 @@ class TestNotification:
         if not os.path.exists(test_pdf_local):
             pytest.skip("Không có file test PDF (tests/resources/sample_simple.pdf)")
 
-        go_to_home(driver, cfg)
         clear_all_notifications(driver)
         adb._run(["shell", "input", "keyevent", "3"])  # HOME - background app
         time.sleep(3)
 
         ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-        remote_path = f"/sdcard/Download/tc013_test_{ts}.pdf"
+        remote_path = f"/sdcard/Download/tc011_test_{ts}.pdf"
         adb.push_file(test_pdf_local, remote_path)
         time.sleep(2)
 
-        noti_keyword = "You have a new file"
-        noti_found = wait_for_notification(driver, noti_keyword, timeout=30)
-        if not noti_found:
-            driver.activate_app(pkg)
-            adb._run(["shell", "rm", remote_path])
-            pytest.skip("Không có notification để test TC-013")
+        # Trigger media scan để app nhận diện file mới
+        try:
+            adb._run(["shell", "am", "broadcast",
+                      "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                      "-d", f"file://{remote_path}"])
+            time.sleep(1)
+        except Exception:
+            pass
+        
+        # Vào Home app, click vào file vừa push, đợi 5s rồi dismiss ads
+        file_name = os.path.basename(remote_path)
+        go_to_home(driver, cfg)
+        items = find_all(driver, "vl_item_file_name", timeout=10)
+        target = next((el for el in items if file_name.replace(".pdf", "") in el.text), None)
+        if target:
+            target.click()
+        time.sleep(5)
+        RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
+        
+        # Terminate app và đợi 3s
+        driver.terminate_app(pkg)
+        time.sleep(3)
 
+        # Nhấn Home và đợi để app background + notification xuất hiện
+        adb._run(["shell", "input", "keyevent", "3"])  # KEYCODE_HOME
+        time.sleep(3)
+        go_to_home(driver, cfg)
+        adb._run(["shell", "input", "keyevent", "3"])  # KEYCODE_HOME
+        time.sleep(3)
+        noti_found = wait_for_notification(driver, "All Docs PDF Reader", timeout=30)
+        assert noti_found, "Không tìm thấy notification 'All Docs PDF Reader'"
         # Xóa toàn bộ notification
         clear_all_notifications(driver)
         time.sleep(2)
-
         # Verify notification đã biến mất
         driver.open_notifications()
         time.sleep(2)
         source = driver.page_source
-        still_visible = noti_keyword.lower() in source.lower()
-        driver.back()
+        noti_keyword = ["Don't miss out"]
+        for i in noti_keyword:
+            still_visible = i.lower() in source.lower()
+            assert not still_visible, \
+            f"Notification '{i}' vẫn còn sau khi xóa"
         time.sleep(1)
-
         adb._run(["shell", "rm", remote_path])
-        try:
-            driver.activate_app(pkg)
-        except Exception:
-            pass
 
-        assert not still_visible, \
-            f"Notification '{noti_keyword}' vẫn còn sau khi xóa"
         print(f"\n  TC-013 PASS: Notification đã bị xóa thành công")
 
     # ── TC-014: Alarm notification 9AM (Morning) ─────────────────────────────

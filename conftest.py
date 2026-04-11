@@ -105,8 +105,14 @@ def _create_appium_driver(serial: str = ""):
             drv = webdriver.Remote(f"http://{host}:{port}", options=options)
             break
         except Exception as e:
-            if "Appium Settings app is not running" in str(e) and attempt < 2:
-                _log(f"[APPIUM] Settings timeout, restarting Appium (attempt {attempt + 1})...")
+            err = str(e)
+            need_restart = (
+                "Appium Settings app is not running" in err
+                or "Connection refused" in err
+                or "Failed to establish a new connection" in err
+            )
+            if need_restart and attempt < 2:
+                _log(f"[APPIUM] Connection failed ({type(e).__name__}), restarting Appium (attempt {attempt + 1})...")
                 _restart_appium(port, serial)
             else:
                 raise
@@ -136,6 +142,12 @@ def _post_create_driver_init(drv, serial: str = ""):
             _adb._run(["shell", "pm", "grant", pkg, perm])
         except Exception:
             pass
+    # MANAGE_EXTERNAL_STORAGE (All Files Access) — phải dùng appops set, không dùng pm grant
+    # Cần thiết để app thấy file trong /sdcard/Download/ trên Android 11+
+    try:
+        _adb._run(["shell", "appops", "set", pkg, "MANAGE_EXTERNAL_STORAGE", "allow"])
+    except Exception:
+        pass
 
     # Chờ app khởi động rồi dismiss onboarding/ads best-effort
     time.sleep(CFG["device"]["launch_timeout"])
@@ -421,6 +433,50 @@ def _ensure_uia2_alive(driver, serial: str = ""):
         _recover_uia2_after_test_if_needed(driver, serial)
 
 
+def _full_restart_appium_driver(driver_proxy, serial: str = ""):
+    """
+    Tắt Appium server, bật lại, tạo lại Appium driver session hoàn toàn mới.
+    Gọi đầu mỗi test case để đảm bảo UiAutomator2 luôn sạch trạng thái,
+    tránh crash tích lũy giữa các test.
+    Không chạy onboarding/permission — chỉ tạo session mới thuần túy.
+    """
+    t0 = time.time()
+    _log("[RESTART 1/3] Quit session cũ...")
+    try:
+        old_drv = getattr(driver_proxy, "_drv", None)
+        if old_drv is None:
+            old_drv = getattr(driver_proxy, "driver", None)
+        if old_drv:
+            old_drv.quit()
+        _log("[RESTART 1/3] Session cũ đã quit ✓")
+    except Exception as e:
+        _log(f"[RESTART 1/3] Quit failed (bỏ qua): {e}")
+
+    _log("[RESTART 2/3] Tắt + bật lại Appium server...")
+    port = CFG["appium"]["port"]
+    ok = _restart_appium(port, serial)
+    _log(f"[RESTART 2/3] Appium server {'sẵn sàng ✓' if ok else 'timeout (tiếp tục)'}")
+
+    _log("[RESTART 3/3] Tạo driver session mới...")
+    new_drv = _create_appium_driver(serial)
+
+    if hasattr(driver_proxy, "set_driver"):
+        driver_proxy.set_driver(new_drv)
+
+    global _session_driver, _recording_active
+    _session_driver = driver_proxy
+
+    # Driver mới chưa có recording — start lại nếu video đang bật
+    # (hook pytest_runtest_protocol đã start trên driver cũ rồi quit mất)
+    if _video_enabled():
+        _recording_active = False
+        _do_start_recording(driver_proxy)
+        _log("[RESTART] Recording khởi động lại trên driver mới ✓")
+
+    elapsed = time.time() - t0
+    _log(f"[RESTART DONE] Driver đã reset xong ✓ ({elapsed:.1f}s)")
+
+
 def _recover_uia2_after_test_if_needed(driver, serial: str = ""):
     """
     Recovery nhẹ sau mỗi test để giảm crash khi chuyển sang test tiếp theo.
@@ -497,16 +553,28 @@ def setup_before_test(driver):
     _wait_for_device(serial, timeout=30)
 
     # Kiểm tra và recover UiAutomator2 nếu crash từ test trước
-    _ensure_uia2_alive(driver, serial)
+    # _ensure_uia2_alive(driver, serial)
+
+    # Tắt Appium + khởi tạo lại driver hoàn toàn để tránh UiA2 crash tích lũy
+    _full_restart_appium_driver(driver, serial)
+
+    # Đảm bảo MANAGE_EXTERNAL_STORAGE luôn được cấp (có thể bị thu hồi sau force-stop)
+    pkg = CFG["app"]["package_name"]
+    try:
+        subprocess.run(
+            (["adb", "-s", serial] if serial else ["adb"])
+            + ["shell", "appops", "set", pkg, "MANAGE_EXTERNAL_STORAGE", "allow"],
+            capture_output=True, timeout=5,
+        )
+    except Exception:
+        pass
 
     # Close app state bằng lifecycle command (shared helper)
     # (thay cho thao tác Recent Apps UI để giảm crash UiAutomator2)
     try:
-        close_recentapp2(driver, adb=None, pkg=CFG["app"]["package_name"], home=True)
+        close_recentapp2(driver, adb=None, pkg=pkg, home=True)
     except Exception:
         pass
-
-    pkg = CFG["app"]["package_name"]
 
     # Close app/home lại 1 lần nữa để đảm bảo clean state (dùng shared helper)
     try:
@@ -525,56 +593,57 @@ def setup_before_test(driver):
     # App Open Ad overlay: "Continue to app >" (~96%, ~10.6%)
     # uiautomator dump không hoạt động khi AdActivity → dùng tap ADB thuần
     adb_prefix = ["adb", "-s", serial] if serial else ["adb"]
-    try:
-        driver.activate_app(pkg)
-        time.sleep(5)  # chờ app load + ad xuất hiện
+    # try:
+    #     driver.activate_app(pkg)
+    #     time.sleep(5)  # chờ app load + ad xuất hiện
 
-        # Lấy screen size bằng ADB (không dùng Appium để tránh crash)
-        try:
-            result = subprocess.run(
-                (["adb", "-s", serial] if serial else ["adb"]) + ["shell", "wm", "size"],
-                capture_output=True, text=True, timeout=5
-            )
-            import re as _re
-            m = _re.search(r"(\d+)x(\d+)", result.stdout or "")
-            w, h = (int(m.group(1)), int(m.group(2))) if m else (1080, 2400)
-        except Exception:
-            w, h = 1080, 2400
+    #     # Lấy screen size bằng ADB (không dùng Appium để tránh crash)
+    #     try:
+    #         result = subprocess.run(
+    #             (["adb", "-s", serial] if serial else ["adb"]) + ["shell", "wm", "size"],
+    #             capture_output=True, text=True, timeout=5
+    #         )
+    #         import re as _re
+    #         m = _re.search(r"(\d+)x(\d+)", result.stdout or "")
+    #         w, h = (int(m.group(1)), int(m.group(2))) if m else (1080, 2400)
+    #     except Exception:
+    #         w, h = 1080, 2400
 
-        # Thử nhiều vị trí: nút X AdActivity và "Continue to app" App Open Ad
-        tap_positions = [
-            (int(w * 0.89), int(h * 0.045)),  # AdActivity X button (~961, ~108)
-            (int(w * 0.96), int(h * 0.106)),  # App Open Ad "Continue to app"
-        ]
+    #     # Thử nhiều vị trí: nút X AdActivity và "Continue to app" App Open Ad
+    #     tap_positions = [
+    #         (int(w * 0.89), int(h * 0.045)),  # AdActivity X button (~961, ~108)
+    #         (int(w * 0.96), int(h * 0.106)),  # App Open Ad "Continue to app"
+    #     ]
 
-        # Tap tối đa 10 lần (xen kẽ 2 vị trí), mỗi lần cách nhau 2s
-        for i in range(10):
-            tx, ty = tap_positions[i % len(tap_positions)]
-            subprocess.run(
-                adb_prefix + ["shell", "input", "tap", str(tx), str(ty)],
-                capture_output=True,
-            )
-            time.sleep(2)
-            # Kiểm tra AdActivity đã đóng chưa bằng dumpsys
-            try:
-                r = subprocess.run(
-                    adb_prefix + ["shell", "dumpsys", "activity", "activities"],
-                    capture_output=True, text=True, timeout=5
-                )
-                if "gms.ads.AdActivity" not in (r.stdout or ""):
-                    break
-            except Exception:
-                break
-    except Exception:
-        pass
+    #     # Tap tối đa 10 lần (xen kẽ 2 vị trí), mỗi lần cách nhau 2s
+    #     for i in range(10):
+    #         tx, ty = tap_positions[i % len(tap_positions)]
+    #         subprocess.run(
+    #             adb_prefix + ["shell", "input", "tap", str(tx), str(ty)],
+    #             capture_output=True,
+    #         )
+    #         time.sleep(2)
+    #         # Kiểm tra AdActivity đã đóng chưa bằng dumpsys
+    #         try:
+    #             r = subprocess.run(
+    #                 adb_prefix + ["shell", "dumpsys", "activity", "activities"],
+    #                 capture_output=True, text=True, timeout=5
+    #             )
+    #             if "gms.ads.AdActivity" not in (r.stdout or ""):
+    #                 break
+    #         except Exception:
+    #             break
+    # except Exception:
+    #     pass
 
-    try:
-        driver.terminate_app(pkg)
-    except Exception:
-        subprocess.run(adb_prefix + ["shell", "am", "force-stop", pkg], capture_output=True)
+    # try:
+    #     driver.terminate_app(pkg)
+    # except Exception:
+    #     subprocess.run(adb_prefix + ["shell", "am", "force-stop", pkg], capture_output=True)
     time.sleep(1)
     subprocess.run(adb_prefix + ["shell", "input", "keyevent", "3"], capture_output=True)
     time.sleep(1)
+    print("Finish setup before test")
 
     yield
 
@@ -708,7 +777,8 @@ def pytest_runtest_makereport(item, call):
                     print(f"\n  [SCREENSHOT][ADB] {path}")
                 else:
                     # Cách 2: screencap ra /sdcard rồi pull về (fallback thêm)
-                    remote = f"/sdcard/Download/{secure_filename(fname)}_{suffix}_fallback.png"
+                    safe_fname = re.sub(r"[^\w\-.]", "_", fname)
+                    remote = f"/sdcard/Download/{safe_fname}_{suffix}_fallback.png"
                     subprocess.run(adb_prefix + ["shell", "screencap", "-p", remote],
                                    capture_output=True, timeout=15)
                     pull = subprocess.run(adb_prefix + ["pull", remote, path],

@@ -302,15 +302,33 @@ def dismiss_ads(driver) -> bool:
 def _is_ad_showing(driver) -> bool:
     """
     Kiểm tra có đang hiển thị open app ad không.
-    Chỉ dùng current_activity để tránh crash UIAutomator2 khi WebView present.
+    Dùng ADB dumpsys (không phụ thuộc UIA2) để tránh crash khi WebView present.
     """
+    import subprocess as _sp_ad
+    serial = os.environ.get("TEST_DEVICE_SERIAL", "")
+    _adb_ad = ["adb", "-s", serial] if serial else ["adb"]
+    try:
+        _r = _sp_ad.run(
+            _adb_ad + ["shell", "dumpsys", "activity", "activities"],
+            capture_output=True, text=True, timeout=5,
+        )
+        _focus = ""
+        for _line in (_r.stdout or "").splitlines():
+            if "mCurrentFocus" in _line:
+                _focus = _line.lower()
+                break
+        if any(a in _focus for a in ["adactivity", "admob", "interstitialad"]):
+            return True
+    except Exception:
+        pass
+    # Fallback: try Appium current_activity
     try:
         activity = driver.current_activity or ""
         if any(a in activity for a in ["AdActivity", "AdMob", "admob", "InterstitialAd"]):
             return True
-        return False
     except Exception:
-        return False
+        pass
+    return False
 
 
 def _safe_dismiss_open_app_ad(driver) -> bool:
@@ -452,11 +470,19 @@ def _is_home_screen(driver, serial: str = "") -> bool:
                 return True
     except Exception:
         pass
-    # Appium fallback
+    # Appium fallback — normal home (có file)
     try:
-        return bool(find(driver, "rcv_all_file", timeout=2) and find(driver, "layoutAll", timeout=1))
+        if find(driver, "rcv_all_file", timeout=2) and find(driver, "layoutAll", timeout=1):
+            return True
     except Exception:
-        return False
+        pass
+    # Permission-denied home: layoutAll + vl_setting_permission (rcv_all_file bị ẩn)
+    try:
+        if find(driver, "layoutAll", timeout=1) and find(driver, "vl_setting_permission", timeout=1):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _adb_click_by_id(serial: str, resource_id: str) -> bool:
@@ -506,12 +532,16 @@ def go_to_home(driver, cfg: dict) -> bool:
     pkg = cfg["app"]["package_name"]
     _adb_g = ["adb", "-s", serial] if serial else ["adb"]
 
+    _log(f"[GO_HOME] start (serial={serial or 'default'}, pkg={pkg})")
+
     # 1. Về launcher
+    _log("[GO_HOME] step1: HOME keyevent")
     subprocess.run(_adb_g + ["shell", "input", "keyevent", "3"],
                    capture_output=True, timeout=5)
     time.sleep(1)
 
     # 2. Kill app
+    _log("[GO_HOME] step2: terminate/force-stop app")
     try:
         driver.terminate_app(pkg)
     except Exception:
@@ -520,9 +550,11 @@ def go_to_home(driver, cfg: dict) -> bool:
     time.sleep(1)
 
     # 3. Mở lại app
+    _log("[GO_HOME] step3: activate app")
     try:
         driver.activate_app(pkg)
     except Exception:
+        _log("[GO_HOME] activate_app failed → monkey launch (ADB)")
         subprocess.run(
             _adb_g + ["shell", "monkey", "-p", pkg,
                       "-c", "android.intent.category.LAUNCHER", "1"],
@@ -531,18 +563,24 @@ def go_to_home(driver, cfg: dict) -> bool:
     time.sleep(3)
 
     # 4. Loop dismiss + check Home
-    for _i in range(10):
+    for _i in range(20):
+        _log(f"[GO_HOME] loop iter={_i+1}/20")
         # Settings "All files access" — back bằng ADB
-        _adb_back_if_settings()
+        if _adb_back_if_settings():
+            _log("[GO_HOME] settings/permission screen detected → ADB BACK")
+            time.sleep(1)
+            continue
 
         # Dismiss ad (ADB primary — không crash UIA2)
         if _adb_dismiss_ad_if_active():
+            _log("[GO_HOME] ad dismissed (ADB)")
             time.sleep(1.5)
             continue
 
         # Dismiss ad (Appium fallback)
         try:
             if _is_ad_showing(driver):
+                _log("[GO_HOME] ad showing (Appium) → dismiss_ads()")
                 dismiss_ads(driver)
                 time.sleep(1)
                 continue
@@ -552,6 +590,7 @@ def go_to_home(driver, cfg: dict) -> bool:
         # Đã ở Home? (ADB dump primary, Appium fallback)
         if _is_home_screen(driver, serial):
             # Tap layoutAll để chắc chắn đang ở Home fragment (không phải file browser)
+            _log("[GO_HOME] home detected → tap layoutAll (ADB) + return True")
             _adb_click_by_id(serial, "layoutAll")
             time.sleep(0.5)
             _log(f"[GO_HOME] Home reached (iter={_i+1}) ✓")
@@ -567,13 +606,15 @@ def go_to_home(driver, cfg: dict) -> bool:
                 _allow = driver.find_element(
                     "xpath",
                     '//*[@resource-id="com.android.permissioncontroller:id/permission_allow_button"]'
-                    ' | //*[@text="Allow"] | //*[@text="While using the app"]',
+                    ' | //*[@text="While using the app"]'
+                    ' | //*[@text="Allow all the time"]',
                 )
                 _allow.click()
                 _clicked = True
             except Exception:
                 pass
         if _clicked:
+            _log("[GO_HOME] notification permission dialog handled")
             time.sleep(1.5)
             continue
 
@@ -589,6 +630,7 @@ def go_to_home(driver, cfg: dict) -> bool:
             except Exception:
                 pass
         if _clicked_rate:
+            _log("[GO_HOME] rating dialog closed")
             time.sleep(1)
             continue
 
@@ -604,36 +646,37 @@ def go_to_home(driver, cfg: dict) -> bool:
             except Exception:
                 pass
         if _clicked_cont:
+            _log("[GO_HOME] onboarding language continue clicked")
             time.sleep(2)
             continue
 
-        # btnDialogConfirm (permission dialog trong onboarding)
-        _clicked_perm = _adb_click_by_id(serial, "btnDialogConfirm")
+        # btnDialogDeny (permission fragment trong onboarding — click "Remind Later" để từ chối)
+        _clicked_perm = _adb_click_by_id(serial, "btnDialogDeny")
         if not _clicked_perm:
             try:
-                if is_visible(driver, "btnDialogConfirm", timeout=1):
-                    btn = find(driver, "btnDialogConfirm")
+                if is_visible(driver, "btnDialogDeny", timeout=3):
+                    btn = find(driver, "btnDialogDeny")
                     if btn:
                         btn.click()
                         _clicked_perm = True
             except Exception:
                 pass
         if _clicked_perm:
+            _log("[GO_HOME] onboarding permission denied/remind later clicked")
             time.sleep(2)
             continue
 
-        # Không match → back
-        try:
-            driver.back()
-        except Exception:
-            subprocess.run(_adb_g + ["shell", "input", "keyevent", "4"],
-                           capture_output=True, timeout=5)
-        time.sleep(1)
+        # Không match → chờ (không press BACK để tránh đóng dialog/activity nhạy cảm)
+        _log("[GO_HOME] no action matched → wait")
+        time.sleep(1.5)
 
     if _is_home_screen(driver, serial):
+        _log("[GO_HOME] final check: home detected → tap layoutAll")
         _adb_click_by_id(serial, "layoutAll")
         time.sleep(0.5)
+        _log("[GO_HOME] end: home reached ✓")
         return True
+    _log("[GO_HOME] end: home NOT reached ✗")
     return False
 
 
@@ -893,7 +936,7 @@ def dismiss_onboarding(driver, cfg: dict):
             except Exception:
                 _adb_launch_app_ob()
             continue
-
+        time.sleep(10)
         # 1b. AdActivity đang foreground → dismiss ad rồi tiếp tục
         if _is_ad_activity_ob():
             _log(f"[ONBOARD iter={_iter_ob}] step1b: AdActivity detected → dismiss ad")
@@ -913,15 +956,34 @@ def dismiss_onboarding(driver, cfg: dict):
             return True
 
         # 3. Language screen → click btn_continue
-        _lang_visible = is_visible(driver, "btn_continue", timeout=2)
-        _log(f"[ONBOARD iter={_iter_ob}] step3: btn_continue visible={_lang_visible}")
+        # Kiểm tra theo activity name (ChooseLanguageActivity) hoặc Appium find
+        _on_lang_act = False
+        try:
+            _on_lang_act = "ChooseLanguage" in driver.current_activity
+        except Exception:
+            pass
+        _lang_visible = _on_lang_act or is_visible(driver, "btn_continue", timeout=2)
+        _log(f"[ONBOARD iter={_iter_ob}] step3: btn_continue visible={_lang_visible} (on_lang_act={_on_lang_act})")
         if _lang_visible:
+            _clicked_lang = False
             _btn = find(driver, "btn_continue")
             if _btn is not None:
                 _btn.click()
+                _clicked_lang = True
                 _log(f"[ONBOARD iter={_iter_ob}] step3: clicked btn_continue ✓")
-            else:
-                _log(f"[ONBOARD iter={_iter_ob}] step3: btn_continue found by is_visible but find() returned None")
+            if not _clicked_lang:
+                # ADB tap fallback — btn_continue bounds=[930,132][1080,279], center≈(1005,206)
+                try:
+                    _sz_ob = driver.get_window_size()
+                    _tx_ob = int(_sz_ob["width"] * 0.93)
+                    _ty_ob = int(_sz_ob["height"] * 0.086)
+                except Exception:
+                    _tx_ob, _ty_ob = 1005, 206
+                subprocess.run(
+                    _adb_ob + ["shell", "input", "tap", str(_tx_ob), str(_ty_ob)],
+                    capture_output=True, timeout=5,
+                )
+                _log(f"[ONBOARD iter={_iter_ob}] step3: ADB tap ({_tx_ob},{_ty_ob}) for language confirm")
             time.sleep(2)
             continue
 
@@ -947,14 +1009,14 @@ def dismiss_onboarding(driver, cfg: dict):
             try:
                 from selenium.webdriver.support.ui import WebDriverWait as _WDW4
                 from selenium.webdriver.support import expected_conditions as _EC4
-                _allow_el = _WDW4(driver, 3).until(
+                _allow_el = _WDW4(driver, 5).until(
                     _EC4.presence_of_element_located((AppiumBy.ID, rid("btnDialogConfirm")))
                 )
                 _allow_el.click()
                 _app_allow_clicked = True
                 _log(f"[ONBOARD iter={_iter_ob}] step4: Appium tap btnDialogConfirm ✓")
             except Exception as _e4a:
-                _log(f"[ONBOARD iter={_iter_ob}] step4: Appium btnDialogConfirm failed: {_e4a}")
+                _log(f"[ONBOARD iter={_iter_ob}] step4: Appium btnDialogConfirm failed")
         if _app_allow_clicked:
             time.sleep(2)
             continue
@@ -1014,29 +1076,7 @@ def app_init(driver, cfg: dict) -> bool:
     # Detect bằng text (uiautomator dump) vì mCurrentFocus không phân biệt được
     _serial_init = os.environ.get("TEST_DEVICE_SERIAL", "")
     _adb_init = ["adb", "-s", _serial_init] if _serial_init else ["adb"]
-    for _i_cleanup in range(5):
-        try:
-            _r_init_chk = subprocess.run(
-                _adb_init + ["shell", "uiautomator dump /dev/tty 2>/dev/null"],
-                capture_output=True, text=True, timeout=10,
-            )
-            _xml_init = _r_init_chk.stdout or ""
-        except Exception:
-            _xml_init = ""
-        if any(t in _xml_init for t in _SETTINGS_SCREEN_TEXTS):
-            print(f"  [INIT] Vẫn kẹt 'All files access' (lần {_i_cleanup+1}) → ADB BACK + relaunch")
-            subprocess.run(_adb_init + ["shell", "input", "keyevent", "4"],
-                           capture_output=True, timeout=5)
-            time.sleep(1.5)
-            subprocess.run(
-                _adb_init + ["shell", "monkey", "-p", pkg, "-c",
-                             "android.intent.category.LAUNCHER", "1"],
-                capture_output=True, timeout=8,
-            )
-            time.sleep(2)
-        else:
-            break
-
+   
     # Kill app sau khi onboarding xong
     time.sleep(1)
     try:
@@ -1045,15 +1085,8 @@ def app_init(driver, cfg: dict) -> bool:
     except Exception:
         subprocess.run(_adb_init + ["shell", "am", "force-stop", pkg], capture_output=True)
         print("  [INIT] Đã kill app (ADB) ✓")
-        
-    try:
-        driver.activate_app(PKG)
-        time.sleep(2)
-        print("  [INIT] Đã activate lại app ✓")
-    except Exception:
-        pass
 
-    time.sleep(1)
+    time.sleep(5)
     return result
 
 
@@ -1063,7 +1096,10 @@ dismiss_onboarding2 = app_init
 
 def _load_config():
     import yaml
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
+    # config.yaml nằm ở project root (1 cấp trên tests/)
+    tests_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(tests_dir, "..", "config.yaml")
+    config_path = os.path.normpath(config_path)
     with open(config_path) as f:
         return yaml.safe_load(f)
 
