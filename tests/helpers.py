@@ -563,21 +563,22 @@ def go_to_home(driver, cfg: dict) -> bool:
     time.sleep(3)
 
     # 4. Loop dismiss + check Home
-    for _i in range(20):
-        _log(f"[GO_HOME] loop iter={_i+1}/20")
+    for _i in range(5):
+        _log(f"[GO_HOME] loop iter={_i+1}/5")
         # Settings "All files access" — back bằng ADB
-        if _adb_back_if_settings():
-            _log("[GO_HOME] settings/permission screen detected → ADB BACK")
-            time.sleep(1)
-            continue
+        # if _adb_back_if_settings():
+        #     _log("[GO_HOME] settings/permission screen detected → ADB BACK")
+        #     time.sleep(1)
+        #     continue
 
         # Dismiss ad (ADB primary — không crash UIA2)
-        if _adb_dismiss_ad_if_active():
-            _log("[GO_HOME] ad dismissed (ADB)")
-            time.sleep(1.5)
-            continue
+        # if _adb_dismiss_ad_if_active():
+        #     _log("[GO_HOME] ad dismissed (ADB)")
+        #     time.sleep(1.5)
+        #     continue
 
         # Dismiss ad (Appium fallback)
+        _log("[GO_HOME] Checking for ads")
         try:
             if _is_ad_showing(driver):
                 _log("[GO_HOME] ad showing (Appium) → dismiss_ads()")
@@ -597,26 +598,26 @@ def go_to_home(driver, cfg: dict) -> bool:
             return True
 
         # Notification permission dialog (Android 13+)
-        _clicked = (
-            _adb_click_by_id(serial, "permission_allow_button")
-            or _adb_click_by_id(serial, "permission_deny_button")  # deny cũng được, miễn thoát
-        )
-        if not _clicked:
-            try:
-                _allow = driver.find_element(
-                    "xpath",
-                    '//*[@resource-id="com.android.permissioncontroller:id/permission_allow_button"]'
-                    ' | //*[@text="While using the app"]'
-                    ' | //*[@text="Allow all the time"]',
-                )
-                _allow.click()
-                _clicked = True
-            except Exception:
-                pass
-        if _clicked:
-            _log("[GO_HOME] notification permission dialog handled")
-            time.sleep(1.5)
-            continue
+        # _clicked = (
+        #     _adb_click_by_id(serial, "permission_allow_button")
+        #     or _adb_click_by_id(serial, "permission_deny_button")  # deny cũng được, miễn thoát
+        # )
+        # if not _clicked:
+        #     try:
+        #         _allow = driver.find_element(
+        #             "xpath",
+        #             '//*[@resource-id="com.android.permissioncontroller:id/permission_allow_button"]'
+        #             ' | //*[@text="While using the app"]'
+        #             ' | //*[@text="Allow all the time"]',
+        #         )
+        #         _allow.click()
+        #         _clicked = True
+        #     except Exception:
+        #         pass
+        # if _clicked:
+        #     _log("[GO_HOME] notification permission dialog handled")
+        #     time.sleep(1.5)
+        #     continue
 
         # imv_close_rate (rating dialog)
         _clicked_rate = _adb_click_by_id(serial, "imv_close_rate")
@@ -635,36 +636,36 @@ def go_to_home(driver, cfg: dict) -> bool:
             continue
 
         # btn_continue (language/onboarding)
-        _clicked_cont = _adb_click_by_id(serial, "btn_continue")
-        if not _clicked_cont:
-            try:
-                if is_visible(driver, "btn_continue", timeout=1):
-                    btn = find(driver, "btn_continue")
-                    if btn:
-                        btn.click()
-                        _clicked_cont = True
-            except Exception:
-                pass
-        if _clicked_cont:
-            _log("[GO_HOME] onboarding language continue clicked")
-            time.sleep(2)
-            continue
+        # _clicked_cont = _adb_click_by_id(serial, "btn_continue")
+        # if not _clicked_cont:
+        #     try:
+        #         if is_visible(driver, "btn_continue", timeout=1):
+        #             btn = find(driver, "btn_continue")
+        #             if btn:
+        #                 btn.click()
+        #                 _clicked_cont = True
+        #     except Exception:
+        #         pass
+        # if _clicked_cont:
+        #     _log("[GO_HOME] onboarding language continue clicked")
+        #     time.sleep(2)
+        #     continue
 
         # btnDialogDeny (permission fragment trong onboarding — click "Remind Later" để từ chối)
-        _clicked_perm = _adb_click_by_id(serial, "btnDialogDeny")
-        if not _clicked_perm:
-            try:
-                if is_visible(driver, "btnDialogDeny", timeout=3):
-                    btn = find(driver, "btnDialogDeny")
-                    if btn:
-                        btn.click()
-                        _clicked_perm = True
-            except Exception:
-                pass
-        if _clicked_perm:
-            _log("[GO_HOME] onboarding permission denied/remind later clicked")
-            time.sleep(2)
-            continue
+        # _clicked_perm = _adb_click_by_id(serial, "btnDialogDeny")
+        # if not _clicked_perm:
+        #     try:
+        #         if is_visible(driver, "btnDialogDeny", timeout=3):
+        #             btn = find(driver, "btnDialogDeny")
+        #             if btn:
+        #                 btn.click()
+        #                 _clicked_perm = True
+        #     except Exception:
+        #         pass
+        # if _clicked_perm:
+        #     _log("[GO_HOME] onboarding permission denied/remind later clicked")
+        #     time.sleep(2)
+        #     continue
 
         # Không match → chờ (không press BACK để tránh đóng dialog/activity nhạy cảm)
         _log("[GO_HOME] no action matched → wait")
@@ -1060,6 +1061,12 @@ def app_init(driver, cfg: dict) -> bool:
     pkg = cfg["app"]["package_name"]
 
     print("\n  [INIT] Khởi động app lần đầu để thiết lập...")
+    
+    # Nhấn Home để đảm bảo bắt đầu từ màn hình chính
+    _serial_init = os.environ.get("TEST_DEVICE_SERIAL", "")
+    _adb_init = ["adb", "-s", _serial_init] if _serial_init else ["adb"]
+    subprocess.run(_adb_init + ["shell", "input", "keyevent", "3"], capture_output=True)
+    time.sleep(2)
 
     # Launch app
     try:
@@ -1087,6 +1094,32 @@ def app_init(driver, cfg: dict) -> bool:
         print("  [INIT] Đã kill app (ADB) ✓")
 
     time.sleep(5)
+    
+    # Grant tất cả runtime permissions cần thiết qua ADB
+    _runtime_perms = [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.CAMERA",
+        "android.permission.SCHEDULE_EXACT_ALARM",
+    ]
+    for perm in _runtime_perms:
+        r = subprocess.run(
+            _adb_init + ["shell", "pm", "grant", pkg, perm],
+            capture_output=True, text=True
+        )
+        status = "✓" if r.returncode == 0 else f"✗ ({r.stderr.strip()[:60]})"
+        print(f"  [INIT] grant {perm.split('.')[-1]}: {status}")
+
+    # MANAGE_EXTERNAL_STORAGE cần appops (không grant được qua pm grant)
+    # r = subprocess.run(
+    #     _adb_init + ["shell", "appops", "set", pkg, "MANAGE_EXTERNAL_STORAGE", "allow"],
+    #     capture_output=True, text=True
+    # )
+    # print(f"  [INIT] appops MANAGE_EXTERNAL_STORAGE: {'✓' if r.returncode == 0 else '✗'}")
+
     return result
 
 

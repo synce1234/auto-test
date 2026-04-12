@@ -405,30 +405,40 @@ class RobustDriver:
 
     # Text / content-desc phổ biến của nút đóng ad
     _AD_CLOSE_TEXTS = (
-        "닫기", "Close", "close", "CLOSE",
+        "Continue to app", "닫기", "Close", "close", "CLOSE",
         "Skip", "SKIP", "Skip Ad", "Skip ad",
         "X", "✕", "×",
         "Dismiss", "DISMISS",
     )
 
     def is_ad_visible(self) -> bool:
-        """Kiểm tra activity hiện tại có phải ad overlay không (dùng dumpsys window)."""
-        adb = self._adb_controller()
-        if adb is None:
-            print("  [AD] is_ad_visible: không có ADB controller")
-            return False
+        import subprocess as _sp_ad
+        serial = os.environ.get("TEST_DEVICE_SERIAL", "")
+        _adb_ad = ["adb", "-s", serial] if serial else ["adb"]
+        time.sleep(5)
         try:
-            _, out, _ = adb._run(
-                ["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"],
-                timeout=6,
+            _r = _sp_ad.run(
+                _adb_ad + ["shell", "dumpsys", "activity", "activities"],
+                capture_output=True, text=True, timeout=5,
             )
-            focused = (out or "").lower()
-            result = any(k in focused for k in self._AD_ACTIVITIES)
-            print(f"  [AD] is_ad_visible: focus={focused.strip()!r} → {result}")
-            return result
-        except Exception as e:
-            print(f"  [AD] is_ad_visible: exception {e}")
-            return False
+            _focus = ""
+            for _line in (_r.stdout or "").splitlines():
+                if "mCurrentFocus" in _line:
+                    _focus = _line.lower()
+                    break
+            if any(a in _focus for a in ["adactivity", "admob", "interstitialad"]):
+                return True
+        except Exception:
+            pass
+        # Fallback: try Appium current_activity
+        try:
+            driver = object.__getattribute__(self, "_driver")
+            activity = driver.current_activity or ""
+            if any(a in activity for a in ["AdActivity", "AdMob", "admob", "InterstitialAd"]):
+                return True
+        except Exception:
+            pass
+        return False
 
     def dismiss_ad(self, timeout: float = 5.0) -> bool:
         """

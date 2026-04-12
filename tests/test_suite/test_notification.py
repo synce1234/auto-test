@@ -517,7 +517,7 @@ class TestNotification:
     def _setup_before_test(self, adb):
         """Chạy trước mỗi test: xóa file test trên device, rồi nhấn Home."""
         _dirs = "/sdcard/Download /sdcard/Documents /sdcard/Document /sdcard/DCIM /sdcard"
-        _exts = "pdf doc docx xls xlsx ppt pptx txt epub svg html"
+        _exts = "pdf doc docx xls xlsx ppt pptx txt epub svg html xml csv"
         _rm_cmd = (
             f"for d in {_dirs}; do "
             f"for ext in {_exts}; do "
@@ -904,9 +904,9 @@ class TestNotification:
         time.sleep(3)
 
         # Kiểm tra notification
-        noti_found = wait_for_notification(driver, "Complete Reading Now", timeout=30)
-        if not noti_found:
-            noti_found = wait_for_notification(driver, "Don't miss it", timeout=15)
+        noti_found = wait_for_notification(driver, "Don't miss it", timeout=30)
+        # if not noti_found:
+        #     noti_found = wait_for_notification(driver, "Don't miss it", timeout=15)
 
         if not noti_found:
             open_notification_shade(driver)
@@ -925,23 +925,29 @@ class TestNotification:
         Expected: Hiện noti silent với 'Complete Reading Now'
         """
         pkg = cfg["app"]["package_name"]
-        go_to_home(driver, cfg)
-
-        # Chọn file không phải Welcome
-        items = find_all(driver, "vl_item_file_name", timeout=10)
-        target = next((el for el in items if "welcome" not in el.text.lower()), None)
+        # go_to_home(driver, cfg)
+        
+        # # Chọn file không phải Welcome
+        # items = find_all(driver, "vl_item_file_name", timeout=10)
+        # target = next((el for el in items if "welcome" not in el.text.lower()), None)
 
         # Nếu không có file phù hợp → push file test
-        if target is None:
-            test_pdf_local = os.path.join(
-                os.path.dirname(__file__), "../../tests/resources/sample_simple.pdf"
-            )
-            remote_path = "/sdcard/Download/sample_simple.pdf"
-            adb.push_file(test_pdf_local, remote_path)
-            time.sleep(3)
-            go_to_home(driver, cfg)
-            items = find_all(driver, "vl_item_file_name", timeout=10)
-            target = next((el for el in items if "welcome" not in el.text.lower()), None)
+        # if target is None:
+        test_pdf_local = os.path.join(
+            os.path.dirname(__file__), "../../tests/resources/sample_simple.pdf"
+        )
+        remote_path = "/sdcard/Download/sample_simple.pdf"
+        adb.push_file(test_pdf_local, remote_path)
+        try:
+            adb._run(["shell", "am", "broadcast",
+                      "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                      "-d", f"file://{remote_path}"])
+        except Exception:
+            pass
+        time.sleep(3)
+        go_to_home(driver, cfg)
+        items = find_all(driver, "vl_item_file_name", timeout=10)
+        target = next((el for el in items if "welcome" not in el.text.lower()), None)
 
         if target is None:
             pytest.skip("Không có file nào (ngoài Welcome) để test TC-008")
@@ -951,6 +957,7 @@ class TestNotification:
         time.sleep(3)
 
         RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
+        time.sleep(3)
 
         # Cuộn đến cuối file để simulate đọc 100%
         if is_visible(driver, "doc_view", timeout=8):
@@ -964,7 +971,6 @@ class TestNotification:
         if is_visible(driver, "imv_toolbar_back", timeout=5):
             find(driver, "imv_toolbar_back").click()
             time.sleep(2)
-
         # Xóa notifications cũ
         clear_all_notifications(driver)
 
@@ -972,15 +978,12 @@ class TestNotification:
         background_app(driver)
         time.sleep(2)
 
-        # Force gửi exit notification qua ADB broadcast (TYPE_EXIT_9, khác với TC-006 dùng TYPE_EXIT_10)
-        force_exit_notification(adb, pkg, alarm_type=10342)  # TYPE_EXIT_9
-
         # Kiểm tra notification
         noti_found = wait_for_notification(driver, "Complete Reading Now", timeout=15)
-        if not noti_found:
-            noti_found = wait_for_notification(driver, "Read All Files", timeout=10)
-        if not noti_found:
-            noti_found = wait_for_notification(driver, "Don't miss it", timeout=10)
+        # if not noti_found:
+        #     noti_found = wait_for_notification(driver, "Read All Files", timeout=10)
+        # if not noti_found:
+        #     noti_found = wait_for_notification(driver, "Don't miss it", timeout=10)
 
         # Mở notification shade trước khi assert để screenshot chụp đúng trạng thái
         if not noti_found:
@@ -1058,9 +1061,9 @@ class TestNotification:
         time.sleep(3)
 
         # Kiểm tra notification
-        noti_found = wait_for_notification(driver, "Complete Reading Now", timeout=15)
-        if not noti_found:
-            noti_found = wait_for_notification(driver, "Don't miss it", timeout=15)
+        noti_found = wait_for_notification(driver, "Don't miss out", timeout=15)
+        # if not noti_found:
+        #     noti_found = wait_for_notification(driver, "Don't miss it", timeout=15)
 
         # Mở notification shade trước khi assert để screenshot chụp đúng trạng thái
         if not noti_found:
@@ -1124,7 +1127,10 @@ class TestNotification:
 
         # Cleanup
         adb._run(["shell", "rm", remote_path])
-
+        # Mở notification shade trước khi assert để screenshot chụp đúng trạng thái
+        if not noti_found:
+            open_notification_shade(driver)
+            time.sleep(2)
         assert noti_found, \
             "Không tìm thấy silent notification 'Reminder: You seems need to view this file'"
         print(f"\n  TC-010 PASS: Silent noti 'Reminder' cho unread file hiện thị")
@@ -1174,7 +1180,7 @@ class TestNotification:
             target.click()
         time.sleep(5)
         RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
-        
+        time.sleep(3)
         # Terminate app và đợi 3s
         driver.terminate_app(pkg)
         time.sleep(3)
