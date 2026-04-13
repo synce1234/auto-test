@@ -299,6 +299,44 @@ def dismiss_ads(driver) -> bool:
     return False
 
 
+def close_exit_dialog(driver) -> bool:
+    """
+    Đóng dialog thoát / rate-us nếu đang hiển thị sau khi bấm Back.
+
+    Dialog "Do you like PDF Reader?" xuất hiện khi back từ viewer về Home.
+    Nút close có resource-id: imv_close_rate
+    Fallback: btn_more_review ("I need more time to review")
+
+    Trả về True nếu đã đóng được dialog, False nếu không có dialog.
+    """
+    # Thử click nút X (imv_close_rate)
+    try:
+        el = WebDriverWait(driver, 4).until(
+            EC.presence_of_element_located((AppiumBy.ID, rid("imv_close_rate")))
+        )
+        el.click()
+        _log("[EXIT_DIALOG] Đã đóng dialog bằng imv_close_rate")
+        time.sleep(0.5)
+        return True
+    except Exception:
+        pass
+
+    # Fallback: click "I need more time to review"
+    try:
+        el = WebDriverWait(driver, 2).until(
+            EC.presence_of_element_located((AppiumBy.ID, rid("btn_more_review")))
+        )
+        el.click()
+        _log("[EXIT_DIALOG] Đã đóng dialog bằng btn_more_review")
+        time.sleep(0.5)
+        return True
+    except Exception:
+        pass
+
+    _log("[EXIT_DIALOG] Không phát hiện dialog thoát")
+    return False
+
+
 def _is_ad_showing(driver) -> bool:
     """
     Kiểm tra có đang hiển thị open app ad không.

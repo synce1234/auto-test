@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from tests.helpers import (
     find, find_all, is_visible, rid,
     go_to_home, dismiss_onboarding2, _is_ad_showing, _safe_dismiss_open_app_ad,
+    close_exit_dialog,
 )
 
 
@@ -97,7 +98,8 @@ class TestOpenPDF:
         assert is_visible(driver, "imv_toolbar_back", timeout=8)
         find(driver, "imv_toolbar_back").click()
         time.sleep(2)
-
+        close_exit_dialog(driver)
+        time.sleep(2)
         assert is_visible(driver, "rcv_all_file", timeout=8), \
             "Không về được Home sau khi bấm Back"
 

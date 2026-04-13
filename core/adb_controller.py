@@ -166,6 +166,7 @@ class ADBController:
 
     def push_file(self, local_path: str, remote_path: str) -> bool:
         """Push file lên device"""
+        assert os.path.exists(local_path), f"File local không tồn tại: {local_path}"
         code, _, err = self._run(["push", local_path, remote_path], timeout=60)
         return code == 0
 

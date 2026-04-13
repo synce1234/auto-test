@@ -374,7 +374,14 @@ def api_start_run():
                     capture_output=True, text=True, timeout=120
                 )
                 ok = r.returncode == 0 and "Success" in r.stdout
-                _emit({"type": "log", "text": f"[INSTALL] {'OK ✓' if ok else 'FAILED ✗'} {r.stdout.strip() or r.stderr.strip()}"})
+                if ok:
+                    _emit({"type": "log", "text": f"[INSTALL] OK ✓ {r.stdout.strip()}"})
+                else:
+                    reason = "\n".join(
+                        ln for ln in (r.stdout + "\n" + r.stderr).splitlines()
+                        if ln.strip() and ln.strip() != "Performing Streamed Install"
+                    ).strip() or r.stdout.strip() or r.stderr.strip()
+                    _emit({"type": "log", "text": f"[INSTALL] FAILED ✗ {reason}"})
                 if not ok:
                     _emit({"type": "done", "code": 1})
                     return
