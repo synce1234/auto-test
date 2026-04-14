@@ -690,11 +690,15 @@ def video_recorder(driver, request):
 
 # ─── Ghi kết quả từ @pytest.mark.tc_id ────────────────────────────────────────
 
+_last_printed_tc_id: list[str] = [None]  # dùng list để mutate trong nested scope
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_call(item):
     """Map @pytest.mark.tc_id marker → TCManager để update Excel/HTML dashboard."""
     tc_id_log = _tc_id_from_item(item) or item.name
-    print(f"\n{'─' * 20} Đang chạy {tc_id_log} {'─' * 20}")
+    if tc_id_log != _last_printed_tc_id[0]:
+        print(f"\n{'─' * 20} Đang chạy {tc_id_log} {'─' * 20}")
+        _last_printed_tc_id[0] = tc_id_log
     start = time.time()
     outcome = yield
     duration = time.time() - start

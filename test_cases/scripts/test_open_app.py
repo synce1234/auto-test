@@ -161,29 +161,24 @@ class TestTC001:
         if remaining > 0:
             time.sleep(remaining)
 
-    def test_splash_shows(self, driver, tc):
-        """Màn hình Splash hiển thị đúng khi mở app."""
+    def test_open_app_first_launch(self, driver, tc):
+        """Mở app lần đầu: Splash hiển thị → chuyển sang Ads hoặc màn hình tiếp theo."""
         splash_ok = _wait_for_splash(driver, timeout=10)
         assert splash_ok, "Màn hình Splash không hiển thị"
-        tc.update_result("TC_001", "PASS",
-                         actual="Màn hình Splash hiển thị đúng")
 
-    def test_interstitial_ad_shows_after_splash(self, driver, tc):
-        """Sau Splash → hiện Interstitial Ads hoặc màn hình tiếp theo."""
         time.sleep(5)
         ad_or_next = (
             _is_on_interstitial_ad(driver) or
             _is_past_splash(driver)
         )
-        assert ad_or_next, \
-            "Sau Splash không hiển thị Ads hoặc màn hình tiếp theo"
+        assert ad_or_next, "Sau Splash không hiển thị Ads hoặc màn hình tiếp theo"
 
         if _is_on_interstitial_ad(driver):
-            actual = "Hiển thị Interstitial Ads"
+            actual = "Splash hiển thị → Interstitial Ads"
         elif _is_on_language_screen(driver):
-            actual = "Hiển thị Language screen"
+            actual = "Splash hiển thị → Language screen"
         else:
-            actual = "Chuyển thẳng đến Home screen (đã onboard)"
+            actual = "Splash hiển thị → Home screen (đã onboard)"
         tc.update_result("TC_001", "PASS", actual=actual)
 
 
