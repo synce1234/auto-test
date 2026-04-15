@@ -165,21 +165,22 @@ def api_devices():
 def _build_tc_map() -> dict:
     """
     Scan test files từ cả 2 thư mục → {TC_ID: pytest_node_id}.
-    Ưu tiên: @pytest.mark.tc_id marker → tên class TestTC001 → TC_001.
+    Ưu tiên (cao → thấp):
+      1. @pytest.mark.tc_id trên method (bất kỳ thư mục nào) — tests/test_suite ưu tiên hơn legacy
+      2. Class-name-based TestTC001→TC_001 (chỉ dùng nếu chưa có marker)
     """
     import ast as _ast
     import re as _re
-    tc_map = {}
 
     scan_dirs = []
-    # Legacy dir trước — class-name mapping (TestTC001→TC_001) có ưu tiên cao nhất
     if os.path.isdir(_LEGACY_DIR):
-        scan_dirs.append((_LEGACY_DIR, "marker+class"))
-    # Test suite sau — marker-based, chỉ map nếu TC ID chưa có trong map
+        scan_dirs.append(_LEGACY_DIR)
     if os.path.isdir(SCRIPTS_DIR) and SCRIPTS_DIR != _LEGACY_DIR:
-        scan_dirs.append((SCRIPTS_DIR, "marker+class"))
+        scan_dirs.append(SCRIPTS_DIR)
 
-    for scan_dir, mode in scan_dirs:
+    # Pass 1: marker-based — tests/test_suite sau cùng để ghi đè legacy nếu trùng
+    marker_map = {}
+    for scan_dir in scan_dirs:
         rel_base = os.path.relpath(scan_dir, BASE_DIR)
         for fname in sorted(os.listdir(scan_dir)):
             if not (fname.startswith("test_") and fname.endswith(".py")):
@@ -192,8 +193,6 @@ def _build_tc_map() -> dict:
                 for cls_node in _ast.walk(tree):
                     if not (isinstance(cls_node, _ast.ClassDef) and cls_node.name.startswith("Test")):
                         continue
-
-                    # 1. Marker-based: @pytest.mark.tc_id trên từng method
                     for func_node in cls_node.body:
                         if not (isinstance(func_node, _ast.FunctionDef) and func_node.name.startswith("test_")):
                             continue
@@ -203,17 +202,31 @@ def _build_tc_map() -> dict:
                             attr = getattr(deco.func, "attr", None) or getattr(deco.func, "id", None)
                             if attr == "tc_id" and deco.args and isinstance(deco.args[0], _ast.Constant):
                                 tc_id = str(deco.args[0].value).replace("-", "_")
-                                # Marker trỏ vào method cụ thể (không chạy cả class)
-                                if tc_id not in tc_map:
-                                    tc_map[tc_id] = f"{rel_path}::{cls_node.name}::{func_node.name}"
+                                marker_map[tc_id] = f"{rel_path}::{cls_node.name}::{func_node.name}"
+            except Exception:
+                pass
 
-                    # 2. Class-name-based: TestTC001 → TC_001 (nếu chưa có trong map)
+    tc_map = dict(marker_map)
+
+    # Pass 2: class-name-based — chỉ điền cho TC chưa có marker
+    for scan_dir in scan_dirs:
+        rel_base = os.path.relpath(scan_dir, BASE_DIR)
+        for fname in sorted(os.listdir(scan_dir)):
+            if not (fname.startswith("test_") and fname.endswith(".py")):
+                continue
+            fpath = os.path.join(scan_dir, fname)
+            rel_path = os.path.join(rel_base, fname)
+            try:
+                with open(fpath) as f:
+                    tree = _ast.parse(f.read())
+                for cls_node in _ast.walk(tree):
+                    if not (isinstance(cls_node, _ast.ClassDef) and cls_node.name.startswith("Test")):
+                        continue
                     m = _re.match(r"TestTC(\d+)$", cls_node.name)
                     if m:
                         tc_id = f"TC_{m.group(1).zfill(3)}"
                         if tc_id not in tc_map:
                             tc_map[tc_id] = f"{rel_path}::{cls_node.name}"
-
             except Exception:
                 pass
 

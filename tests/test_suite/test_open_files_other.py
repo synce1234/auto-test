@@ -36,6 +36,7 @@ except Exception:
 
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+from tests.utils.robust_driver import RobustDriver
 from tests.helpers import (
     find, find_all, find_text, is_visible, rid,
     go_to_home, dismiss_ads, _is_ad_showing, ensure_app_foreground,
@@ -708,6 +709,15 @@ def _is_file_in_star_tab(driver, filename_contains: str) -> bool:
 
     return False
 
+def _click_tab_others(driver) -> bool:
+    """Click vào tab Others (layoutStar) trên màn home."""
+    try:
+        tab = find(driver, "layoutStar", timeout=8)
+        tab.click()
+        time.sleep(1)
+        return True
+    except Exception:
+        return False
 
 def _set_filter_to_all(driver) -> bool:
     """
@@ -751,6 +761,8 @@ def open_file_from_home_scroll(driver, adb, cfg, remote_path=None):
         pass
     
     _set_filter_to_all(driver)
+    if os.path.splitext(remote_path or "")[1].lower() != ".pdf":
+        _click_tab_others(driver)
     
     file_name = os.path.splitext(os.path.basename(remote_path))[0]
 
@@ -1724,40 +1736,69 @@ class TestOpenFilesOther:
         TC-038: Mở file DOC/DOCX từ trong app PDF Reader
         Expected: Reader mở + toolbar đầy đủ (back, note, search, go_to_page, edit, star, share, print)
         """
-        if not os.path.exists(_res("sample.docx")):
-            pytest.skip("Không có sample.docx để test")
-
-        _push(adb, "sample.docx", REMOTE_DOCX_PATH)
-
-        clicked = _open_file_from_home(driver, adb, cfg, "sample_docx_autotest",
-                                        REMOTE_DOCX_PATH, timeout=15)
-        assert clicked, "Không tìm thấy/click được file DOCX trong Home screen"
-
-        if _is_ad_showing(driver):
-            dismiss_ads(driver)
-            time.sleep(1)
-
-        reader_open = _wait_reader_open(driver, timeout=25)
-        assert reader_open, "Reader không mở sau khi click file DOCX"
-
-        # Kiểm tra các toolbar elements luôn hiển thị
-        always_visible_ids = [
-            "imv_toolbar_back",
-            "imgCreateNote",
-            "imv_toolbar_search",
-            "imv_toolbar_star",
+        large_files = [
+            ("medium_file.docx", "/sdcard/Download/medium_file.docx"),
         ]
-        missing = _check_reader_toolbar(driver, always_visible_ids)
-        assert not missing, f"Toolbar thiếu các elements: {missing}"
+        available = [(name, remote) for name, remote in large_files if os.path.exists(_res(name))]
+        if not available:
+            pytest.skip("Không có file lớn (200–500 trang) để test. "
+                        "Đặt file vào tests/resources/ với tên: large_file.pdf / large_file.docx / large_file.xlsx")
 
-        # Mở PowerMenu bằng nút More và kiểm tra popup xuất hiện (screenshot-based)
-        more_btn = is_visible(driver, "imv_toolbar_more", timeout=5)
-        assert more_btn, "Không tìm thấy nút More ở toolbar"
-        popup_count_before = _powermenu_count_before(adb)
-        driver.find_element("id", f"{PKG}:id/imv_toolbar_more").click()
-        opened = _powermenu_opened_after(adb, popup_count_before, timeout=5)
-        assert opened, "PowerMenu không mở sau khi click nút More (Go to page, Share, Print)"
+        for local_name, remote_path in available:
+            _push(adb, local_name, remote_path)
+            adb._run(["shell", "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                      "-d", f"file://{remote_path}"])
 
+            file_label = local_name.replace("large_file.", "large_autotest.")
+            # Tìm theo tên không có extension để tránh vấn đề dot trong XPATH
+            file_search = file_label.rsplit(".", 1)[0]
+            go_to_home(driver, cfg)
+        
+            time.sleep(10)
+            # Dismiss ad sau khi về home (ad có thể trigger sau khi về home)
+            if _is_ad_showing(driver):
+                dismiss_ads(driver)
+                time.sleep(2)
+
+            clicked = open_file_from_home_scroll(driver, adb, cfg, remote_path)
+            # clicked = _open_file_from_home(driver, adb, cfg, file_search,
+            #                                 remote_path, timeout=20)
+            assert clicked, f"Không tìm thấy/click được file {local_name} trong Home screen"
+            
+            time.sleep(5)
+            RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
+            time.sleep(5)
+
+            reader_open = _wait_reader_open(driver, timeout=40)
+            assert reader_open, f"Reader không mở sau khi click file {local_name}"
+
+            always_visible_ids = [
+                "imv_toolbar_back",
+                "imgCreateNote",
+                "imv_toolbar_search",
+                "imv_toolbar_star",
+            ]
+            missing = _check_reader_toolbar(driver, adb, always_visible_ids)
+            assert not missing, f"Toolbar thiếu các elements: {missing}"
+
+            more_btn = is_visible(driver, "imv_toolbar_more", timeout=5)
+            assert more_btn, "Không tìm thấy nút More ở toolbar"
+            popup_count_before = _powermenu_count_before(adb)
+            driver.find_element("id", f"{PKG}:id/imv_toolbar_more").click()
+            opened = _powermenu_opened_after(adb, popup_count_before, timeout=5)
+            assert opened, "PowerMenu không mở sau khi click nút More (Go to page, Share, Print)"
+
+            # Lưu screenshot vào đúng folder session (cùng với pytest_runtest_makereport)
+            screenshot_dir = os.path.join(
+                os.path.dirname(__file__), "..", "..", "reports", "screenshots", SESSION_TIMESTAMP
+            )
+            # os.makedirs(screenshot_dir, exist_ok=True)
+            # ext = local_name.split(".")[-1]
+            # driver.save_screenshot(os.path.join(screenshot_dir, f"test_tc038_{ext}.png"))
+
+            # go_to_home(driver, cfg)
+            time.sleep(1)
+            
         screenshot_dir = os.path.join(os.path.dirname(__file__), "..", "..", "reports", "screenshots")
         os.makedirs(screenshot_dir, exist_ok=True)
         driver.save_screenshot(os.path.join(screenshot_dir, "test_tc038_docx_open_from_app.png"))
@@ -1771,39 +1812,52 @@ class TestOpenFilesOther:
         TC-039: Mở file Excel (XLSX/XLS) từ trong app PDF Reader
         Expected: Reader mở + toolbar đầy đủ (back, search, go_to_page, edit, star, share, print)
         """
-        if not os.path.exists(_res("sample.xlsx")):
-            pytest.skip("Không có sample.xlsx để test")
-
-        _push(adb, "sample.xlsx", REMOTE_XLSX_PATH)
-
-        clicked = _open_file_from_home(driver, adb, cfg, "sample_xlsx_autotest",
-                                        REMOTE_XLSX_PATH, timeout=15)
-        assert clicked, "Không tìm thấy/click được file XLSX trong Home screen"
-
-        if _is_ad_showing(driver):
-            dismiss_ads(driver)
-            time.sleep(1)
-
-        reader_open = _wait_reader_open(driver, timeout=25)
-        assert reader_open, "Reader không mở sau khi click file XLSX"
-
-        # Kiểm tra các toolbar elements luôn hiển thị
-        always_visible_ids = [
-            "imv_toolbar_back",
-            "imv_toolbar_search",
-            "imv_toolbar_star",
+        large_files = [
+            ("medium_file.xlsx", "/sdcard/Download/medium_file.xlsx"),
         ]
-        missing = _check_reader_toolbar(driver, always_visible_ids)
-        assert not missing, f"Toolbar thiếu các elements: {missing}"
+        available = [(name, remote) for name, remote in large_files if os.path.exists(_res(name))]
+        if not available:
+            pytest.skip("Không có file lớn (200–500 trang) để test. "
+                        "Đặt file vào tests/resources/ với tên: large_file.pdf / large_file.docx / large_file.xlsx")
 
-        # Mở PowerMenu bằng nút More và kiểm tra popup xuất hiện (screenshot-based)
-        # Note: Excel không có "Go to page" trong menu
-        more_btn = is_visible(driver, "imv_toolbar_more", timeout=5)
-        assert more_btn, "Không tìm thấy nút More ở toolbar"
-        popup_count_before = _powermenu_count_before(adb)
-        driver.find_element("id", f"{PKG}:id/imv_toolbar_more").click()
-        opened = _powermenu_opened_after(adb, popup_count_before, timeout=5)
-        assert opened, "PowerMenu không mở sau khi click nút More (Share, Print)"
+        for local_name, remote_path in available:
+            _push(adb, local_name, remote_path)
+            adb._run(["shell", "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                      "-d", f"file://{remote_path}"])
+
+            go_to_home(driver, cfg)
+
+            time.sleep(10)
+            if _is_ad_showing(driver):
+                dismiss_ads(driver)
+                time.sleep(2)
+
+            clicked = open_file_from_home_scroll(driver, adb, cfg, remote_path)
+            assert clicked, f"Không tìm thấy/click được file {local_name} trong Home screen"
+
+            time.sleep(5)
+            RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
+            time.sleep(5)
+
+            reader_open = _wait_reader_open(driver, timeout=40)
+            assert reader_open, f"Reader không mở sau khi click file {local_name}"
+
+            always_visible_ids = [
+                "imv_toolbar_back",
+                "imv_toolbar_search",
+                "imv_toolbar_star",
+            ]
+            missing = _check_reader_toolbar(driver, adb, always_visible_ids)
+            assert not missing, f"Toolbar thiếu các elements: {missing}"
+
+            more_btn = is_visible(driver, "imv_toolbar_more", timeout=5)
+            assert more_btn, "Không tìm thấy nút More ở toolbar"
+            popup_count_before = _powermenu_count_before(adb)
+            driver.find_element("id", f"{PKG}:id/imv_toolbar_more").click()
+            opened = _powermenu_opened_after(adb, popup_count_before, timeout=5)
+            assert opened, "PowerMenu không mở sau khi click nút More (Share, Print)"
+
+            time.sleep(1)
 
         screenshot_dir = os.path.join(os.path.dirname(__file__), "..", "..", "reports", "screenshots")
         os.makedirs(screenshot_dir, exist_ok=True)
@@ -1818,46 +1872,58 @@ class TestOpenFilesOther:
         TC-040: Mở file TXT từ trong app PDF Reader
         Expected: Reader mở + toolbar đầy đủ (back, edit, search, go_to_page, star, share, print)
         """
-        if not os.path.exists(_res("sample.txt")):
-            pytest.skip("Không có sample.txt để test")
-
-        _push(adb, "sample.txt", REMOTE_TXT_PATH)
-
-        clicked = _open_file_from_home(driver, adb, cfg, "sample_txt_autotest",
-                                        REMOTE_TXT_PATH, timeout=15)
-        assert clicked, "Không tìm thấy/click được file TXT trong Home screen"
-
-        if _is_ad_showing(driver):
-            dismiss_ads(driver)
-            time.sleep(1)
-
-        reader_open = _wait_reader_open(driver, timeout=25)
-        assert reader_open, "Reader không mở sau khi click file TXT"
-
-        # Kiểm tra các toolbar elements luôn hiển thị
-        always_visible_ids = [
-            "imv_toolbar_back",
-            "imv_toolbar_edit",
-            "imv_toolbar_search",
-            "imv_toolbar_star",
+        large_files = [
+            ("sample.txt", "/sdcard/Download/sample.txt"),
         ]
-        missing = _check_reader_toolbar(driver, always_visible_ids)
-        assert not missing, f"Toolbar thiếu các elements: {missing}"
+        available = [(name, remote) for name, remote in large_files if os.path.exists(_res(name))]
+        if not available:
+            pytest.skip("Không có file lớn (200–500 trang) để test. "
+                        "Đặt file vào tests/resources/ với tên: large_file.pdf / large_file.docx / large_file.xlsx")
 
-        # Mở PowerMenu bằng nút More và kiểm tra popup xuất hiện (screenshot-based)
-        more_btn = is_visible(driver, "imv_toolbar_more", timeout=5)
-        assert more_btn, "Không tìm thấy nút More ở toolbar"
-        popup_count_before = _powermenu_count_before(adb)
-        driver.find_element("id", f"{PKG}:id/imv_toolbar_more").click()
-        opened = _powermenu_opened_after(adb, popup_count_before, timeout=5)
-        assert opened, "PowerMenu không mở sau khi click nút More (Go to page, Share, Print)"
+        for local_name, remote_path in available:
+            _push(adb, local_name, remote_path)
+            adb._run(["shell", "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                      "-d", f"file://{remote_path}"])
+
+            go_to_home(driver, cfg)
+
+            time.sleep(10)
+            if _is_ad_showing(driver):
+                dismiss_ads(driver)
+                time.sleep(2)
+
+            clicked = open_file_from_home_scroll(driver, adb, cfg, remote_path)
+            assert clicked, f"Không tìm thấy/click được file {local_name} trong Home screen"
+
+            time.sleep(5)
+            RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
+            time.sleep(5)
+
+            reader_open = _wait_reader_open(driver, timeout=40)
+            assert reader_open, f"Reader không mở sau khi click file {local_name}"
+
+            always_visible_ids = [
+                "imv_toolbar_back",
+                "imv_toolbar_edit",
+                "imv_toolbar_search",
+                "imv_toolbar_star",
+            ]
+            missing = _check_reader_toolbar(driver, adb, always_visible_ids)
+            assert not missing, f"Toolbar thiếu các elements: {missing}"
+
+            more_btn = is_visible(driver, "imv_toolbar_more", timeout=5)
+            assert more_btn, "Không tìm thấy nút More ở toolbar"
+            popup_count_before = _powermenu_count_before(adb)
+            driver.find_element("id", f"{PKG}:id/imv_toolbar_more").click()
+            opened = _powermenu_opened_after(adb, popup_count_before, timeout=5)
+            assert opened, "PowerMenu không mở sau khi click nút More (Go to page, Share, Print)"
+
+            time.sleep(1)
 
         screenshot_dir = os.path.join(os.path.dirname(__file__), "..", "..", "reports", "screenshots")
         os.makedirs(screenshot_dir, exist_ok=True)
         driver.save_screenshot(os.path.join(screenshot_dir, "test_tc040_txt_open_from_app.png"))
         print("\n  TC-040 PASS: TXT mở từ app → reader + toolbar đầy đủ")
-
-        print("\n  TC-035 PASS: TXT mở + note popup hiện + keyboard focused")
 
     # ── TC-041: Open EPUB từ app PDF Reader ───────────────────────────────
 
