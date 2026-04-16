@@ -131,7 +131,7 @@ def _attach_assets(cases: list[dict], ts_str: str | None) -> list[dict]:
     ss_dir, vid_dir = _asset_dirs(ts_str)
 
     # Kiểm tra run có dùng naming mới (TC_001_xxx) chưa
-    _tc_pat = _re.compile(r'tc_?\d{3}', _re.IGNORECASE)
+    _tc_pat = _re.compile(r'tc[_a-z]*\d{3}', _re.IGNORECASE)
     all_ss  = _list_all_in_dir(ss_dir,  ".png")
     all_vid = _list_all_in_dir(vid_dir, ".mp4")
     has_prefix = any(_tc_pat.search(os.path.basename(p)) for p in all_ss + all_vid)
