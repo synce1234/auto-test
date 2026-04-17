@@ -8,6 +8,10 @@ from appium.webdriver.common.appiumby import AppiumBy
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+from tests.helpers import go_to_home
+
 
 class TestSmoke:
 
@@ -25,6 +29,7 @@ class TestSmoke:
         # Thử tìm bất kỳ element nào trên màn hình
         try:
             # Đợi activity hiện tại là MainActivity
+            go_to_home(driver, cfg)
             driver.wait_activity(cfg["app"]["main_activity"], timeout=15)
             assert True, "App khởi động thành công"
         except Exception:
@@ -33,8 +38,9 @@ class TestSmoke:
             assert len(source) > 100, "App không có UI sau khi khởi động"
 
     @pytest.mark.tc_id("TC_SM_002")
-    def test_no_crash_dialog(self, driver):
+    def test_no_crash_dialog(self, driver, cfg):
         """Không có dialog 'App stopped' sau khi update"""
+        go_to_home(driver, cfg)
         time.sleep(2)
         source = driver.page_source.lower()
 
@@ -47,11 +53,12 @@ class TestSmoke:
             assert keyword not in source, f"App bị crash: tìm thấy '{keyword}' trên màn hình"
 
     @pytest.mark.tc_id("TC_SM_003")
-    def test_bottom_navigation_visible(self, driver):
+    def test_bottom_navigation_visible(self, driver, cfg):
         """Bottom navigation bar hiển thị đúng"""
         # Tìm bottom nav bằng nhiều cách
         found = False
 
+        go_to_home(driver, cfg)
         # Thử tìm bằng resource-id pattern phổ biến
         try:
             els = driver.find_elements(AppiumBy.XPATH,
