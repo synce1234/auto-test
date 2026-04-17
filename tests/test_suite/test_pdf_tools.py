@@ -13,6 +13,7 @@ from tests.helpers import (
     go_to_home, dismiss_onboarding2, _is_ad_showing, _safe_dismiss_open_app_ad,
     open_fab_menu, close_fab_menu,
 )
+from tests.utils.robust_driver import RobustDriver
 
 
 class TestPDFTools:
@@ -20,13 +21,35 @@ class TestPDFTools:
     @pytest.fixture(autouse=True)
     def setup(self, driver, cfg, tc_manager):
         """Đảm bảo đang ở Home và FAB menu đóng trước mỗi test."""
-        if _is_ad_showing(driver):
-            _safe_dismiss_open_app_ad(driver)
+        # if _is_ad_showing(driver):
+        #     _safe_dismiss_open_app_ad(driver)
+        #     time.sleep(1)
+        # dismiss_onboarding2(driver, cfg)
+        # back lại trong trường hợp đang ở màn scan Google (com.google.android.gms DocumentScanningActivity)
+        try:
+            driver.terminate_app("com.google.android.gms")
+        except Exception:
+            pass
+        driver.press_keycode(3)  # HOME
+        pkg = cfg["app"]["package_name"]
+        try:
+            driver.terminate_app(pkg)
             time.sleep(1)
-        dismiss_onboarding2(driver, cfg)
+            
+        except Exception:
+            pass
+        try:
+            driver.activate_app(pkg)
+        except Exception as e:
+            if RobustDriver(driver)._is_uia2_crash(e):
+                RobustDriver(driver).restart_appium_server(
+                    port=int(os.environ.get("APPIUM_PORT", 4723)),
+                    serial=os.environ.get("TEST_DEVICE_SERIAL", ""),
+                )
+        time.sleep(3)
         go_to_home(driver, cfg)
         # Đảm bảo FAB menu đóng (có thể còn mở từ test trước)
-        close_fab_menu(driver)
+        # close_fab_menu(driver)
         time.sleep(0.5)
 
     # ── FAB Menu ─────────────────────────────────────────────────────────────
@@ -55,7 +78,7 @@ class TestPDFTools:
             if not is_visible(driver, tool_id, timeout=5):
                 missing.append(tool_name)
 
-        close_fab_menu(driver)
+        # close_fab_menu(driver)
         assert not missing, f"Không tìm thấy các tool: {missing}"
 
     # ── Split PDF ────────────────────────────────────────────────────────────
@@ -76,7 +99,7 @@ class TestPDFTools:
         assert len(source) > 200, "Màn hình Split trống/crash"
         print(f"\n  Activity: {driver.current_activity}")
 
-        driver.back()
+        # driver.back()
         time.sleep(1)
 
     @pytest.mark.tc_id("TC_TOOL_004")
@@ -97,7 +120,7 @@ class TestPDFTools:
             rvs = driver.find_elements(AppiumBy.CLASS_NAME, "androidx.recyclerview.widget.RecyclerView")
             found = len(rvs) > 0
 
-        driver.back()
+        # driver.back()
         time.sleep(1)
         assert found, "Màn hình Split không có danh sách file"
 
@@ -114,7 +137,7 @@ class TestPDFTools:
         assert len(source) > 200, "Màn hình Merge crash"
         print(f"\n  Activity: {driver.current_activity}")
 
-        driver.back()
+        # driver.back()
         time.sleep(1)
 
     # ── PDF Scanner ──────────────────────────────────────────────────────────
@@ -130,7 +153,7 @@ class TestPDFTools:
         assert len(source) > 200, "Màn hình Scanner crash"
         print(f"\n  Activity: {driver.current_activity}")
 
-        driver.back()
+        # driver.back()
         time.sleep(1)
 
     # ── Sign PDF ─────────────────────────────────────────────────────────────
@@ -145,5 +168,5 @@ class TestPDFTools:
         source = driver.page_source
         assert len(source) > 200, "Màn hình Sign PDF crash"
 
-        driver.back()
+        # driver.back()
         time.sleep(1)
