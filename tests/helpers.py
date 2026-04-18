@@ -559,161 +559,158 @@ def go_to_home(driver, cfg: dict) -> bool:
     """
     Navigate về màn hình Home (rcv_all_file — danh sách file).
 
-    Luồng cố định:
+    Luồng tối ưu:
       1. HOME keyevent (về launcher)
       2. Kill app
       3. Mở lại app
-      4. Loop: dismiss ads / notification dialog / rating dialog / Settings →
-         kiểm tra rcv_all_file bằng ADB dump (không phụ thuộc UIA2)
+      4. Loop: dùng dumpsys activity (0.02s) để detect state, chỉ gọi
+         uiautomator dump khi đang trong MainActivity cần check fragment.
+         - AdActivity → BACK keyevent (0.5s, không cần dump)
+         - SplashScreen / launcher → đợi 0.5s
+         - MainActivity → ONE dump để check home + rating dialog cùng lúc
     """
     serial = os.environ.get("TEST_DEVICE_SERIAL", "")
     pkg = cfg["app"]["package_name"]
     _adb_g = ["adb", "-s", serial] if serial else ["adb"]
 
+    def _top_act():
+        """dumpsys activity: 0.02s vs uiautomator dump 3s."""
+        r = subprocess.run(_adb_g + ["shell", "dumpsys", "activity", "activities"],
+                           capture_output=True, text=True, timeout=5)
+        for line in r.stdout.splitlines():
+            if "topResumedActivity" in line:
+                return line
+        return ""
+
+    def _dump_xml():
+        fname = f"/sdcard/home_{int(time.time()*1000)}.xml"
+        subprocess.run(_adb_g + ["shell", "uiautomator", "dump", fname],
+                       capture_output=True, timeout=8)
+        r = subprocess.run(_adb_g + ["pull", fname, "/tmp/home_check.xml"],
+                           capture_output=True, text=True, timeout=5)
+        subprocess.run(_adb_g + ["shell", "rm", "-f", fname],
+                       capture_output=True, timeout=3)
+        if r.returncode == 0:
+            with open("/tmp/home_check.xml", errors="replace") as f:
+                return f.read()
+        return None
+
+    def _is_home_in_xml(xml):
+        # Home bình thường (có file list)
+        if "rcv_all_file" in xml and "layoutAll" in xml:
+            return True
+        # Home permission-denied (rcv_all_file ẩn, hiện vl_setting_permission)
+        if "layoutAll" in xml and "vl_setting_permission" in xml:
+            return True
+        return False
+
+    def _tap_by_id_in_xml(xml, res_id):
+        m = re.search(
+            rf'resource-id="[^"]*{re.escape(res_id)}"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"',
+            xml,
+        )
+        if m:
+            cx = (int(m.group(1)) + int(m.group(3))) // 2
+            cy = (int(m.group(2)) + int(m.group(4))) // 2
+            subprocess.run(_adb_g + ["shell", "input", "tap", str(cx), str(cy)],
+                           capture_output=True, timeout=5)
+            return True
+        return False
+
     _log(f"[GO_HOME] start (serial={serial or 'default'}, pkg={pkg})")
 
     # 1. Về launcher
-    _log("[GO_HOME] step1: HOME keyevent")
     subprocess.run(_adb_g + ["shell", "input", "keyevent", "3"],
                    capture_output=True, timeout=5)
-    time.sleep(1)
+    time.sleep(0.5)
 
     # 2. Kill app
-    _log("[GO_HOME] step2: terminate/force-stop app")
     try:
         driver.terminate_app(pkg)
     except Exception:
         subprocess.run(_adb_g + ["shell", "am", "force-stop", pkg],
                        capture_output=True, timeout=5)
-    time.sleep(1)
 
     # 3. Mở lại app
-    _log("[GO_HOME] step3: activate app")
     try:
         driver.activate_app(pkg)
     except Exception:
-        _log("[GO_HOME] activate_app failed → monkey launch (ADB)")
         subprocess.run(
             _adb_g + ["shell", "monkey", "-p", pkg,
                       "-c", "android.intent.category.LAUNCHER", "1"],
             capture_output=True, timeout=8,
         )
-    time.sleep(3)
+    time.sleep(1.5)
 
-    # 4. Loop dismiss + check Home
-    for _i in range(5):
-        _log(f"[GO_HOME] loop iter={_i+1}/5")
-        # Settings "All files access" — back bằng ADB
-        # if _adb_back_if_settings():
-        #     _log("[GO_HOME] settings/permission screen detected → ADB BACK")
-        #     time.sleep(1)
-        #     continue
+    # 4. Loop: dumpsys-first, dump chỉ khi cần
+    _splash_count = 0
+    for _i in range(16):
+        act = _top_act()
+        _log(f"[GO_HOME] iter={_i+1} act={act[act.find('u0')+3:].split()[0] if 'u0' in act else act[:60]}")
 
-        # Dismiss ad (ADB primary — không crash UIA2)
-        # if _adb_dismiss_ad_if_active():
-        #     _log("[GO_HOME] ad dismissed (ADB)")
-        #     time.sleep(1.5)
-        #     continue
-
-        # Dismiss ad (Appium fallback)
-        _log("[GO_HOME] Checking for ads")
-        try:
-            if _is_ad_showing(driver):
-                _log("[GO_HOME] ad showing (Appium) → dismiss_ads()")
-                dismiss_ads(driver)
-                time.sleep(1)
-                continue
-        except Exception:
-            pass
-
-        # Đã ở Home? (ADB dump primary, Appium fallback)
-        if _is_home_screen(driver, serial):
-            # Tap layoutAll để chắc chắn đang ở Home fragment (không phải file browser)
-            _log("[GO_HOME] home detected → tap layoutAll (ADB) + return True")
-            _adb_click_by_id(serial, "layoutAll")
+        # AdActivity → BACK keyevent (0.5s, không cần dump)
+        if "AdActivity" in act:
+            subprocess.run(_adb_g + ["shell", "input", "keyevent", "4"],
+                           capture_output=True, timeout=5)
+            _log("[GO_HOME] AdActivity → BACK")
+            _splash_count = 0
             time.sleep(0.5)
+            continue
+
+        # Chưa vào app (launcher / splash) → đợi
+        # Sau 3 iter splash liên tiếp, tăng wait lên 1s; sau 5 iter thử dump XML
+        # vì đôi khi activity vẫn là SplashScreenActivity nhưng home content đã load xong
+        if pkg not in act or "SplashScreen" in act:
+            _splash_count += 1
+            if _splash_count > 5:
+                _log(f"[GO_HOME] splash iter={_splash_count} → thử dump XML để check home")
+                xml = _dump_xml()
+                if xml and _is_home_in_xml(xml):
+                    _tap_by_id_in_xml(xml, "layoutAll")
+                    time.sleep(0.3)
+                    _log(f"[GO_HOME] Home reached in splash (iter={_i+1}) ✓")
+                    return True
+                if xml and "imv_close_rate" in xml:
+                    _tap_by_id_in_xml(xml, "imv_close_rate")
+                    _log("[GO_HOME] rating dialog closed (in splash)")
+                    time.sleep(0.5)
+                    continue
+            _wait = 1.0 if _splash_count > 3 else 0.5
+            _log(f"[GO_HOME] launcher/splash → wait {_wait}s (consecutive={_splash_count})")
+            time.sleep(_wait)
+            continue
+
+        _splash_count = 0
+
+        # Đang trong app → ONE dump để check home + rating dialog
+        xml = _dump_xml()
+        if xml is None:
+            time.sleep(0.5)
+            continue
+
+        # Rating dialog → close và loop lại
+        if "imv_close_rate" in xml:
+            if _tap_by_id_in_xml(xml, "imv_close_rate"):
+                _log("[GO_HOME] rating dialog closed")
+                time.sleep(0.5)
+                continue
+
+        # Home screen (có file) hoặc home screen permission-denied (vl_setting_permission)
+        if _is_home_in_xml(xml):
+            _tap_by_id_in_xml(xml, "layoutAll")
+            time.sleep(0.3)
             _log(f"[GO_HOME] Home reached (iter={_i+1}) ✓")
             return True
 
-        # Notification permission dialog (Android 13+)
-        # _clicked = (
-        #     _adb_click_by_id(serial, "permission_allow_button")
-        #     or _adb_click_by_id(serial, "permission_deny_button")  # deny cũng được, miễn thoát
-        # )
-        # if not _clicked:
-        #     try:
-        #         _allow = driver.find_element(
-        #             "xpath",
-        #             '//*[@resource-id="com.android.permissioncontroller:id/permission_allow_button"]'
-        #             ' | //*[@text="While using the app"]'
-        #             ' | //*[@text="Allow all the time"]',
-        #         )
-        #         _allow.click()
-        #         _clicked = True
-        #     except Exception:
-        #         pass
-        # if _clicked:
-        #     _log("[GO_HOME] notification permission dialog handled")
-        #     time.sleep(1.5)
-        #     continue
-
-        # imv_close_rate (rating dialog)
-        _clicked_rate = _adb_click_by_id(serial, "imv_close_rate")
-        if not _clicked_rate:
-            try:
-                if is_visible(driver, "imv_close_rate", timeout=1):
-                    btn = find(driver, "imv_close_rate")
-                    if btn:
-                        btn.click()
-                        _clicked_rate = True
-            except Exception:
-                pass
-        if _clicked_rate:
-            _log("[GO_HOME] rating dialog closed")
-            time.sleep(1)
-            continue
-
-        # btn_continue (language/onboarding)
-        # _clicked_cont = _adb_click_by_id(serial, "btn_continue")
-        # if not _clicked_cont:
-        #     try:
-        #         if is_visible(driver, "btn_continue", timeout=1):
-        #             btn = find(driver, "btn_continue")
-        #             if btn:
-        #                 btn.click()
-        #                 _clicked_cont = True
-        #     except Exception:
-        #         pass
-        # if _clicked_cont:
-        #     _log("[GO_HOME] onboarding language continue clicked")
-        #     time.sleep(2)
-        #     continue
-
-        # btnDialogDeny (permission fragment trong onboarding — click "Remind Later" để từ chối)
-        # _clicked_perm = _adb_click_by_id(serial, "btnDialogDeny")
-        # if not _clicked_perm:
-        #     try:
-        #         if is_visible(driver, "btnDialogDeny", timeout=3):
-        #             btn = find(driver, "btnDialogDeny")
-        #             if btn:
-        #                 btn.click()
-        #                 _clicked_perm = True
-        #     except Exception:
-        #         pass
-        # if _clicked_perm:
-        #     _log("[GO_HOME] onboarding permission denied/remind later clicked")
-        #     time.sleep(2)
-        #     continue
-
-        # Không match → chờ (không press BACK để tránh đóng dialog/activity nhạy cảm)
-        _log("[GO_HOME] no action matched → wait")
-        time.sleep(1.5)
-
-    if _is_home_screen(driver, serial):
-        _log("[GO_HOME] final check: home detected → tap layoutAll")
-        _adb_click_by_id(serial, "layoutAll")
+        _log("[GO_HOME] in app but not home → wait 0.5s")
         time.sleep(0.5)
-        _log("[GO_HOME] end: home reached ✓")
+
+    # Final fallback
+    xml = _dump_xml()
+    if xml and _is_home_in_xml(xml):
+        _tap_by_id_in_xml(xml, "layoutAll")
+        time.sleep(0.3)
+        _log("[GO_HOME] end: home reached (fallback) ✓")
         return True
     _log("[GO_HOME] end: home NOT reached ✗")
     return False

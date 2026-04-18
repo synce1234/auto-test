@@ -775,6 +775,7 @@ def open_file_from_home_scroll(driver, adb, cfg, remote_path=None):
         )
         el.click()
         time.sleep(3)
+        RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
         return True
     except Exception:
         pass
@@ -785,6 +786,7 @@ def open_file_from_home_scroll(driver, adb, cfg, remote_path=None):
         if file_name in (item.text or ""):
             item.click()
             time.sleep(3)
+            RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
             return True
 
     # Fallback ADB: scroll + dump để tìm file (khi UIA2 crash)
@@ -824,9 +826,10 @@ def open_file_from_home_scroll(driver, adb, cfg, remote_path=None):
         _sw, _sh = 1080, 2400
 
     # Scroll xuống tối đa 8 lần, mỗi lần check + swipe
-    for _i in range(8):
+    for _ in range(8):
         if _adb_find_and_tap_file():
             time.sleep(2)
+            RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
             return True
         # Swipe lên (scroll list xuống dưới)
         adb._run(["shell", "input", "swipe",
@@ -838,6 +841,7 @@ def open_file_from_home_scroll(driver, adb, cfg, remote_path=None):
     # Lần check cuối sau scroll
     if _adb_find_and_tap_file():
         time.sleep(2)
+        RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
         return True
 
     return False
@@ -1127,7 +1131,7 @@ def _check_reader_toolbar(driver, adb, expected_ids: list) -> list:
 
     # Thử dump tối đa 3 lần (toolbar có thể ẩn ngay sau khi tap)
     _found_ids: set = set()
-    for _attempt in range(3):
+    for _ in range(3):
         _xml = _dump_xml()
         if _xml:
             _found_ids = _ids_in_xml(_xml)

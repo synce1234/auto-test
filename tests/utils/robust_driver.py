@@ -485,6 +485,27 @@ class RobustDriver:
         from appium.webdriver.common.appiumby import AppiumBy
         from selenium.webdriver.common.by import By
 
+        # ── Layer 0: Back keyevent (nhanh nhất, ~0.5s) ───────────────────────
+        print("  [AD] Layer 0: nhấn Back trước")
+        try:
+            driver.press_keycode(4)
+            time.sleep(0.8)
+            if not self.is_ad_visible():
+                print("  [AD] ✓ Đóng via Back (Layer 0)")
+                return True
+        except Exception:
+            pass
+        if adb is not None:
+            try:
+                adb._run(["shell", "input", "keyevent", "4"], timeout=5)
+                time.sleep(0.8)
+                if not self.is_ad_visible():
+                    print("  [AD] ✓ Đóng via ADB Back (Layer 0)")
+                    return True
+            except Exception:
+                pass
+        print("  [AD] Layer 0: Back không đóng được ad, thử layers tiếp theo")
+
         # ── Layer 1: Appium – resource-id ─────────────────────────────────────
         print("  [AD] Layer 1: tìm nút đóng bằng Appium resource-id...")
         for rid in self._AD_CLOSE_RIDS:
