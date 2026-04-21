@@ -503,6 +503,7 @@ select option { background: var(--surface); }
       <div><h2>Reports</h2><p id="report-meta" style="color:var(--muted);">Đang tải...</p></div>
       <div style="display:flex;gap:8px;">
         <button class="btn btn-ghost" onclick="loadReports()">↻ Refresh</button>
+        <a id="report-logs-dl" href="#" download class="btn btn-ghost" style="display:none;">📥 Download Logs</a>
         <a id="report-open-link" href="#" target="_blank" class="btn btn-ghost" style="display:none;">↗ Mở tab mới</a>
       </div>
     </div>
@@ -1209,13 +1210,20 @@ function _renderReportHistory(reports) {
 }
 
 function _loadReportItem(rep, idx) {
-  const iframe = document.getElementById('report-iframe');
-  const link   = document.getElementById('report-open-link');
-  const url    = `/reports/${rep.filename}`;
-  iframe.src   = url;
-  link.href    = url;
+  const iframe  = document.getElementById('report-iframe');
+  const link    = document.getElementById('report-open-link');
+  const logsDl  = document.getElementById('report-logs-dl');
+  const url     = `/reports/${rep.filename}`;
+  iframe.src    = url;
+  link.href     = url;
   link.style.display = 'inline-flex';
-  // Highlight active item
+  if (rep.has_logs) {
+    logsDl.href = `/api/logs/${rep.ts}/download`;
+    logsDl.setAttribute('download', `logs_${rep.ts}.zip`);
+    logsDl.style.display = 'inline-flex';
+  } else {
+    logsDl.style.display = 'none';
+  }
   document.querySelectorAll('#report-history-list .rh-item').forEach((el, i) => {
     el.classList.toggle('active', i === idx);
   });

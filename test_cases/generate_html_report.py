@@ -58,6 +58,14 @@ def _asset_dirs(run_ts: str | None) -> tuple[str, str]:
     return ss, vid
 
 
+def _log_dir(run_ts: str | None) -> str:
+    return os.path.join(REPORTS_DIR, "logs", run_ts) if run_ts else os.path.join(REPORTS_DIR, "logs")
+
+
+def _find_all_logs(tc_id: str, run_ts: str | None = None) -> list[str]:
+    return _find_all_in_dir(_log_dir(run_ts), tc_id, ".txt")
+
+
 def _find_all_in_dir(directory: str, tc_id: str, ext: str) -> list[str]:
     """Trả về danh sách tất cả file khớp TC ID trong directory.
 
@@ -136,18 +144,20 @@ def _attach_assets(cases: list[dict], ts_str: str | None) -> list[dict]:
     all_vid = _list_all_in_dir(vid_dir, ".mp4")
     has_prefix = any(_tc_pat.search(os.path.basename(p)) for p in all_ss + all_vid)
 
+    all_log = _list_all_in_dir(_log_dir(ts_str), ".txt")
+
     result = []
     for i, c in enumerate(cases):
         if has_prefix:
-            # Naming mới: tìm theo TC ID
             ss_paths  = _find_all_screenshots(c["id"], ts_str)
             vid_paths = _find_all_videos(c["id"], ts_str)
+            log_paths = _find_all_logs(c["id"], ts_str)
         elif i == 0:
-            # Naming cũ: dồn tất cả file vào TC đầu tiên
             ss_paths  = all_ss
             vid_paths = all_vid
+            log_paths = all_log
         else:
-            ss_paths, vid_paths = [], []
+            ss_paths, vid_paths, log_paths = [], [], []
 
         ss_b64 = []
         for p in ss_paths:
@@ -160,7 +170,20 @@ def _attach_assets(cases: list[dict], ts_str: str | None) -> list[dict]:
         for p in vid_paths:
             if os.path.exists(p):
                 vids.append(os.path.relpath(p, REPORTS_DIR))
-        result.append({**c, "screenshots": ss_b64, "videos": vids})
+
+        log_content = ""
+        for p in log_paths:
+            if os.path.exists(p):
+                try:
+                    with open(p, encoding="utf-8", errors="replace") as _f:
+                        chunk = _f.read(10000)
+                    if log_content:
+                        log_content += "\n\n─── next log ───\n\n"
+                    log_content += chunk
+                except Exception:
+                    pass
+
+        result.append({**c, "screenshots": ss_b64, "videos": vids, "log": log_content})
     return result
 
 
@@ -289,6 +312,18 @@ def _tc_row(c: dict) -> str:
         vid_cells += f'<a href="{rel}" target="_blank" style="font-size:20px;margin:2px" title="Xem video">🎬</a>'
     vid_cells = vid_cells or "—"
 
+    # Console log
+    log_content = c.get("log", "")
+    if log_content:
+        log_cell = (
+            f'<details><summary style="cursor:pointer;font-size:12px;color:#2b6cb0;white-space:nowrap">📋 Log</summary>'
+            f'<pre style="font-size:11px;white-space:pre-wrap;max-height:300px;overflow:auto;'
+            f'background:#1e1e1e;color:#d4d4d4;padding:8px;border-radius:4px;margin-top:4px;text-align:left">'
+            f'{_escape(log_content)}</pre></details>'
+        )
+    else:
+        log_cell = "—"
+
     return f"""
     <tr class="{row_cls}">
       <td><strong>{_escape(c['id'])}</strong></td>
@@ -301,6 +336,7 @@ def _tc_row(c: dict) -> str:
       <td class="center" style="white-space:nowrap">{_escape(c['duration'])}</td>
       <td class="center">{ss_cells}</td>
       <td class="center">{vid_cells}</td>
+      <td class="center">{log_cell}</td>
     </tr>"""
 
 
@@ -320,7 +356,7 @@ def _group_section(group_name: str, cases: list[dict]) -> str:
           <tr>
             <th>TC ID</th><th>Nhóm</th><th>Nội dung</th>
             <th>Các bước</th><th>Kết quả mong đợi</th><th>Kết quả thực tế</th>
-            <th>Trạng thái</th><th>Thời gian</th><th>Screenshot</th><th>Video</th>
+            <th>Trạng thái</th><th>Thời gian</th><th>Screenshot</th><th>Video</th><th>Log</th>
           </tr>
         </thead>
         <tbody>{rows}</tbody>
@@ -345,6 +381,13 @@ def generate_html(cases: list[dict], run_info: dict, history: list[dict],
 
     run_display = run_info.get("timestamp", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     run_src     = run_info.get("source", "Manual")
+
+    log_dir_path = os.path.join(REPORTS_DIR, "logs", run_ts) if run_ts else None
+    has_logs     = bool(log_dir_path and os.path.isdir(log_dir_path) and os.listdir(log_dir_path))
+    log_dl_btn   = (
+        f'&nbsp;·&nbsp;<a href="/api/logs/{run_ts}/download" download="logs_{run_ts}.zip" '
+        f'style="color:#93c5fd;font-size:12px;text-decoration:none;opacity:.85;">📥 Download Logs</a>'
+    ) if has_logs else ""
 
     # TC tables for initial load (current run)
     groups: dict[str, list] = {}
@@ -463,7 +506,7 @@ def generate_html(cases: list[dict], run_info: dict, history: list[dict],
 <div class="header">
   <h1>📱 PDF Reader — Auto Test Report</h1>
   <div class="meta" id="header-meta">
-    🕐 {run_display} &nbsp;|&nbsp; 📂 {_escape(run_src)}
+    🕐 {run_display} &nbsp;|&nbsp; 📂 {_escape(run_src)}{log_dl_btn}
   </div>
 </div>
 
@@ -626,7 +669,7 @@ function _buildGroupSection(groupName, cases) {{
         <thead><tr>
           <th>TC ID</th><th>Nhóm</th><th>Nội dung</th>
           <th>Các bước</th><th>Kết quả mong đợi</th><th>Kết quả thực tế</th>
-          <th>Trạng thái</th><th>Thời gian</th><th>Screenshot</th><th>Video</th>
+          <th>Trạng thái</th><th>Thời gian</th><th>Screenshot</th><th>Video</th><th>Log</th>
         </tr></thead>
         <tbody>${{rows}}</tbody>
       </table>
@@ -655,6 +698,13 @@ function _buildTcRow(c) {{
       ).join('')
     : '—';
 
+  const logCell = c.log
+    ? `<details><summary style="cursor:pointer;font-size:12px;color:#2b6cb0;white-space:nowrap">📋 Log</summary>
+       <pre style="font-size:11px;white-space:pre-wrap;max-height:300px;overflow:auto;
+                   background:#1e1e1e;color:#d4d4d4;padding:8px;border-radius:4px;
+                   margin-top:4px;text-align:left">${{_esc(c.log)}}</pre></details>`
+    : '—';
+
   return `<tr class="${{rowCls}}">
     <td><strong>${{_esc(c.id)}}</strong></td>
     <td class="group-cell">${{_esc(c.group)}}</td>
@@ -666,6 +716,7 @@ function _buildTcRow(c) {{
     <td class="center" style="white-space:nowrap">${{_esc(c.duration)}}</td>
     <td class="center">${{ssCells}}</td>
     <td class="center">${{vidCells}}</td>
+    <td class="center">${{logCell}}</td>
   </tr>`;
 }}
 

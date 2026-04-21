@@ -1,5 +1,6 @@
-# Claude agent worktrees
+# Claude
 .claude/
+CLAUDE.md
 
 # Python
 __pycache__/

@@ -8,11 +8,14 @@ Cách chạy:
   python server.py --port 9090           # đổi port (mặc định 8080)
   → Mở trình duyệt: http://localhost:8080
 """
+import io
 import os
+import re
 import sys
 import json
 import yaml
 import queue
+import zipfile
 import argparse
 import threading
 import subprocess
@@ -528,15 +531,52 @@ def api_reports():
             continue
         ts   = fname.replace("dashboard_", "").replace(".html", "")
         path = os.path.join(REPORTS_DIR, fname)
-        # Count pass/fail from matching xlsx
-        xlsx = os.path.join(REPORTS_DIR, f"report_{ts}.xlsx")
+        xlsx     = os.path.join(REPORTS_DIR, f"report_{ts}.xlsx")
+        log_dir  = os.path.join(REPORTS_DIR, "logs", ts)
+        has_logs = os.path.isdir(log_dir) and bool(os.listdir(log_dir))
         reports.append({
             "ts":       ts,
             "filename": fname,
             "size_kb":  round(os.path.getsize(path) / 1024),
             "has_xlsx": os.path.isfile(xlsx),
+            "has_logs": has_logs,
         })
     return jsonify(reports)
+
+
+@app.route("/api/logs/<ts>/download")
+def api_download_logs(ts):
+    """Đóng gói toàn bộ log files của 1 run thành ZIP và trả về để download."""
+    if not re.fullmatch(r"\d{8}_\d{6}", ts):
+        return jsonify({"error": "Invalid ts format"}), 400
+    log_dir = os.path.join(REPORTS_DIR, "logs", ts)
+    if not os.path.isdir(log_dir):
+        return jsonify({"error": "No logs found for this run"}), 404
+    files = sorted(f for f in os.listdir(log_dir) if os.path.isfile(os.path.join(log_dir, f)))
+    if not files:
+        return jsonify({"error": "Log directory is empty"}), 404
+    # Build log_total.txt by concatenating all individual logs
+    total_parts = []
+    for fname in files:
+        fpath = os.path.join(log_dir, fname)
+        try:
+            with open(fpath, encoding="utf-8", errors="replace") as _f:
+                total_parts.append(f"{'='*60}\n[{fname}]\n{'='*60}\n{_f.read()}\n")
+        except Exception:
+            pass
+    total_content = "\n".join(total_parts).encode("utf-8")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for fname in files:
+            zf.write(os.path.join(log_dir, fname), fname)
+        zf.writestr("log_total.txt", total_content)
+    buf.seek(0)
+    return Response(
+        buf.read(),
+        mimetype="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="logs_{ts}.zip"'},
+    )
 
 
 @app.route("/reports/<path:filename>")

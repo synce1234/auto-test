@@ -127,16 +127,42 @@ def _generate_plain_html(results: list[dict], ts: str, output_path: str) -> str:
 
     status_color = {"PASS": "#C6EFCE", "FAIL": "#FFC7CE", "SKIP": "#FFEB9C"}
 
+    # Tìm log files từ reports/logs/<ts>/
+    _log_base = os.path.join(os.path.dirname(__file__), "..", "reports", "logs", ts)
+
+    def _read_log_for(name: str) -> str:
+        if not os.path.isdir(_log_base):
+            return ""
+        for fname in os.listdir(_log_base):
+            if fname.endswith(".txt") and name.lower() in fname.lower():
+                try:
+                    with open(os.path.join(_log_base, fname), encoding="utf-8", errors="replace") as _f:
+                        return _f.read(10000)
+                except Exception:
+                    pass
+        return ""
+
+    def _esc(s: str) -> str:
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
     rows_html = ""
     for r in results:
         color  = status_color.get(r["status"], "#FFF")
         detail = f'<details><summary>Error</summary><pre style="font-size:11px;white-space:pre-wrap">{r["longrepr"][:2000]}</pre></details>' if r["longrepr"] else ""
+        log_txt  = _read_log_for(r["name"])
+        log_cell = (
+            f'<details><summary style="cursor:pointer;font-size:12px;color:#2b6cb0">📋 Log</summary>'
+            f'<pre style="font-size:11px;white-space:pre-wrap;max-height:250px;overflow:auto;'
+            f'background:#1e1e1e;color:#d4d4d4;padding:8px;border-radius:4px">'
+            f'{_esc(log_txt[:5000])}</pre></details>'
+        ) if log_txt else "—"
         rows_html += (
             f'<tr style="background:{color}">'
             f'<td style="padding:6px 10px;font-family:monospace;font-size:12px">{r["nodeid"]}</td>'
             f'<td style="padding:6px 10px;text-align:center;font-weight:bold">{r["status"]}</td>'
             f'<td style="padding:6px 10px;text-align:center">{r["duration"]}</td>'
             f'<td style="padding:6px 10px">{detail}</td>'
+            f'<td style="padding:6px 10px">{log_cell}</td>'
             f'</tr>\n'
         )
 
@@ -163,7 +189,7 @@ td{{border-bottom:1px solid #eee}}
   <div class="card"><div class="val">{rate}</div><div class="lbl">Pass rate</div></div>
 </div>
 <table>
-<tr><th>Test</th><th>Status</th><th>Duration</th><th>Detail</th></tr>
+<tr><th>Test</th><th>Status</th><th>Duration</th><th>Detail</th><th>Log</th></tr>
 {rows_html}
 </table>
 </body></html>"""

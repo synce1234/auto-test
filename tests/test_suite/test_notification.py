@@ -697,7 +697,7 @@ class TestNotification:
         """
         TC-005: App không có file nào, close/background app
         Expected: Hiện noti silent:
-          Title: 📚Don't miss it
+          Title: 📚Don’t miss out
           Description: 📚Read All Files With PDF Reader
         """
         pkg = cfg["app"]["package_name"]
@@ -706,7 +706,7 @@ class TestNotification:
         installed = _fresh_install(adb, cfg)
         assert installed, "Không cài được APK"
         # Chạy lại app_init (helpers.py): launch → dismiss onboarding → kill app (chuẩn sau cài mới)
-        assert app_init(driver, cfg), "app_init không hoàn thành sau fresh install"
+        app_init(driver, cfg), "app_init không hoàn thành sau fresh install"
 
         # Xóa tất cả notifications hiện tại
         clear_all_notifications(driver)
@@ -750,7 +750,7 @@ class TestNotification:
             for _ in range(2):
                 try:
                     src = (rdriver.page_source or "").lower()
-                    ok_noti = ("don't miss it".lower() in src) and ("read all files with pdf reader".lower() in src)
+                    ok_noti = ("don’t miss out".lower() in src) and ("read all files with pdf reader".lower() in src)
                     break
                 except Exception as e:
                     if getattr(rdriver, "_is_uia2_crash")(e):
@@ -771,11 +771,11 @@ class TestNotification:
         except Exception:
             ok_noti = False
 
-        assert ok_noti, "Không tìm thấy notification chứa 'Don't miss it' và 'Read All Files With PDF Reader'"
+        assert ok_noti, "Không tìm thấy notification chứa 'don’t miss out' và 'Read All Files With PDF Reader'"
 
         print(f"\n  TC-005 PASS: App không có file nào, close/background app hiện noti silent\n")
 
-        # pytest.skip("NEED CONFIRM: Kiểm tra screenshot — notification 'Don't miss it' có hiện không?")
+        # pytest.skip("NEED CONFIRM: Kiểm tra screenshot — notification 'don’t miss out' có hiện không?")
 
     # ── TC-006: Silent noti - file in-progress <100% từ Home ────────────────
 
@@ -785,7 +785,7 @@ class TestNotification:
         TC-006: Có file in-progress <100%, opened từ Home, close app
         Expected: Noti silent:
           Title: 📚<tên file>.pdf
-          Description: 📚Don't miss it. Complete Reading Now + Nút Open
+          Description: 📚don’t miss out. Complete Reading Now + Nút Open
         """
         # TODO: push 1 file vào để test và trigger scan , hãy tham khảo test open file others
         pkg = cfg["app"]["package_name"]
@@ -834,7 +834,7 @@ class TestNotification:
         # Kiểm tra notification
         noti_found = wait_for_notification(driver, "Complete Reading Now", timeout=15)
         if not noti_found:
-            noti_found = wait_for_notification(driver, "Don't miss it", timeout=10)
+            noti_found = wait_for_notification(driver, "Don’t miss out", timeout=10)
         if not noti_found:
             noti_found = wait_for_notification(driver, "Read All Files", timeout=10)
 
@@ -904,9 +904,9 @@ class TestNotification:
         time.sleep(3)
 
         # Kiểm tra notification
-        noti_found = wait_for_notification(driver, "Don't miss it", timeout=30)
+        noti_found = wait_for_notification(driver, "Don’t miss out", timeout=30)
         # if not noti_found:
-        #     noti_found = wait_for_notification(driver, "Don't miss it", timeout=15)
+        #     noti_found = wait_for_notification(driver, "Don’t miss out", timeout=15)
 
         if not noti_found:
             open_notification_shade(driver)
@@ -983,7 +983,7 @@ class TestNotification:
         # if not noti_found:
         #     noti_found = wait_for_notification(driver, "Read All Files", timeout=10)
         # if not noti_found:
-        #     noti_found = wait_for_notification(driver, "Don't miss it", timeout=10)
+        #     noti_found = wait_for_notification(driver, "Don’t miss out", timeout=10)
 
         # Mở notification shade trước khi assert để screenshot chụp đúng trạng thái
         if not noti_found:
@@ -1063,7 +1063,7 @@ class TestNotification:
         # Kiểm tra notification
         noti_found = wait_for_notification(driver, "Don't miss out", timeout=15)
         # if not noti_found:
-        #     noti_found = wait_for_notification(driver, "Don't miss it", timeout=15)
+        #     noti_found = wait_for_notification(driver, "Don’t miss out", timeout=15)
 
         # Mở notification shade trước khi assert để screenshot chụp đúng trạng thái
         if not noti_found:
@@ -1123,7 +1123,7 @@ class TestNotification:
         if not noti_found:
             noti_found = wait_for_notification(driver, "need to view", timeout=15)
         if not noti_found:
-            noti_found = wait_for_notification(driver, "Don't miss it", timeout=15)
+            noti_found = wait_for_notification(driver, "Don’t miss out", timeout=15)
 
         # Cleanup
         adb._run(["shell", "rm", remote_path])

@@ -38,6 +38,7 @@ CFG = _load_config()
 _REPORTS_ROOT   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
 _SCREENSHOT_DIR = os.path.join(_REPORTS_ROOT, "screenshots", SESSION_TIMESTAMP)
 _VIDEO_DIR      = os.path.join(_REPORTS_ROOT, "videos",      SESSION_TIMESTAMP)
+_LOG_DIR        = os.path.join(_REPORTS_ROOT, "logs",        SESSION_TIMESTAMP)
 
 # Session driver reference — dùng để start recording sớm nhất có thể (trước fixtures)
 _session_driver  = None
@@ -49,6 +50,28 @@ _recording_active = False  # True khi đang có recording chạy
 def _log(msg: str):
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"\n  [{ts}] {msg}")
+
+
+# ─── Stdout tee (ghi đồng thời ra terminal và buffer để capture log) ───────────
+
+class _TeeWriter:
+    """Ghi đồng thời ra stdout thật và StringIO buffer để capture console log."""
+    def __init__(self, real, buf):
+        self._real = real
+        self._buf  = buf
+
+    def write(self, data):
+        self._real.write(data)
+        self._buf.write(data)
+
+    def flush(self):
+        self._real.flush()
+
+    def fileno(self):
+        return self._real.fileno()
+
+    def isatty(self):
+        return getattr(self._real, "isatty", lambda: False)()
 
 
 # ─── Driver proxy (cho phép recreate session giữa test) ────────────────────────
@@ -370,15 +393,34 @@ def _do_start_recording(drv) -> bool:
 def pytest_runtest_protocol(item, nextitem):
     """
     Start recording TRƯỚC KHI bất kỳ fixture nào chạy.
-    Test đầu tiên của session: _session_driver chưa có → video_recorder fixture sẽ xử lý.
-    Các test sau: recording bắt đầu ở đây, trước fresh_launch / setup fixtures.
+    Đồng thời capture toàn bộ stdout (print) trong test → lưu vào reports/logs/<ts>/.
     """
+    import io as _io
     global _recording_active
     _recording_active = False  # Reset cho mỗi test
     need_confirm = item.get_closest_marker("need_confirm") is not None
     if _session_driver and (_video_enabled() or need_confirm):
         _do_start_recording(_session_driver)
+
+    # Bắt đầu capture stdout qua tee
+    _log_buf      = _io.StringIO()
+    _real_stdout  = sys.stdout
+    sys.stdout    = _TeeWriter(_real_stdout, _log_buf)
+
     yield
+
+    # Khôi phục stdout và lưu log
+    sys.stdout = _real_stdout
+    log_content = _log_buf.getvalue()
+    if log_content.strip():
+        tc_id = _tc_id_from_item(item)
+        fname = f"{tc_id}_{item.name}" if tc_id else item.name
+        try:
+            os.makedirs(_LOG_DIR, exist_ok=True)
+            with open(os.path.join(_LOG_DIR, f"{fname}.txt"), "w", encoding="utf-8") as _f:
+                _f.write(log_content)
+        except Exception:
+            pass
 
 
 def _is_uia2_crash(e: Exception) -> bool:
