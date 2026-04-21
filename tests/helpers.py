@@ -650,8 +650,14 @@ def go_to_home(driver, cfg: dict) -> bool:
 
         # AdActivity → BACK keyevent (0.5s, không cần dump)
         if "AdActivity" in act:
-            subprocess.run(_adb_g + ["shell", "input", "keyevent", "4"],
-                           capture_output=True, timeout=5)
+            try:
+                subprocess.run(_adb_g + ["shell", "input", "keyevent", "4"],
+                               capture_output=True, timeout=5)
+            except Exception:
+                try:
+                    driver.back()
+                except Exception:
+                    pass
             _log("[GO_HOME] AdActivity → BACK")
             _splash_count = 0
             time.sleep(0.5)

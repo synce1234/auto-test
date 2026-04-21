@@ -743,6 +743,63 @@ function _nl2br(s) {{ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&
 </html>"""
 
 
+# ─── Result xlsx export ────────────────────────────────────────────────────────
+
+def generate_result_xlsx(cases: list[dict], output_path: str) -> str:
+    """Xuất kết quả test thành xlsx — bỏ cột screenshot/video/log."""
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Test Results"
+
+    headers = ["TC ID", "Nhóm", "Nội dung", "Các bước",
+               "Kết quả mong đợi", "Kết quả thực tế", "Trạng thái", "Thời gian", "Ghi chú"]
+    fields  = ["id", "group", "title", "steps",
+               "expected", "actual", "status", "duration", "notes"]
+
+    _status_fills = {
+        "PASS":         PatternFill("solid", fgColor="C6EFCE"),
+        "FAIL":         PatternFill("solid", fgColor="FFC7CE"),
+        "SKIP":         PatternFill("solid", fgColor="FFEB9C"),
+        "NOT RUN":      PatternFill("solid", fgColor="F2F2F2"),
+        "NEED CONFIRM": PatternFill("solid", fgColor="BDD7EE"),
+    }
+    _thin   = Side(style="thin", color="CCCCCC")
+    _border = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
+
+    # Header row
+    hdr_fill = PatternFill("solid", fgColor="1A365D")
+    hdr_font = Font(bold=True, color="FFFFFF", size=11)
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.fill      = hdr_fill
+        cell.font      = hdr_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border    = _border
+    ws.row_dimensions[1].height = 22
+
+    # Data rows
+    for row_idx, c in enumerate(cases, 2):
+        status   = c.get("status", "NOT RUN")
+        row_fill = _status_fills.get(status, PatternFill("solid", fgColor="FFFFFF"))
+        for col, field in enumerate(fields, 1):
+            cell = ws.cell(row=row_idx, column=col, value=c.get(field, ""))
+            cell.fill      = row_fill
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            cell.border    = _border
+
+    # Column widths
+    for col, width in enumerate([12, 14, 40, 40, 40, 40, 14, 12, 20], 1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+    ws.freeze_panes = "A2"
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    wb.save(output_path)
+    return output_path
+
+
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
 def generate(source_xlsx: str = TC_EXCEL, output: str = None,
@@ -765,6 +822,15 @@ def generate(source_xlsx: str = TC_EXCEL, output: str = None,
 
     with open(output, "w", encoding="utf-8") as f:
         f.write(html)
+
+    # Xuất xlsx kết quả (chỉ TC đã chạy, không có screenshot/video/log)
+    ran_cases = [c for c in cases if c.get("status", "NOT RUN") != "NOT RUN"]
+    if ran_cases and run_ts:
+        try:
+            xlsx_out = os.path.join(REPORTS_DIR, f"result_{run_ts}.xlsx")
+            generate_result_xlsx(ran_cases, xlsx_out)
+        except Exception as _e:
+            print(f"[RESULT XLSX] {_e}")
 
     return output
 

@@ -514,7 +514,7 @@ class TestNotification:
     """
 
     @pytest.fixture(autouse=True)
-    def _setup_before_test(self, adb):
+    def _setup_before_test(self, adb, cfg):
         """Chạy trước mỗi test: xóa file test trên device, rồi nhấn Home."""
         _dirs = "/sdcard/Download /sdcard/Documents /sdcard/Document /sdcard/DCIM /sdcard"
         _exts = "pdf doc docx xls xlsx ppt pptx txt epub svg html xml csv"
@@ -528,6 +528,25 @@ class TestNotification:
             adb._run(["shell", _rm_cmd], timeout=60)
         except Exception:
             pass
+
+        # Cấp storage permission cho app
+        pkg = cfg["app"]["package_name"]
+        for perm in [
+            "android.permission.READ_EXTERNAL_STORAGE",
+            "android.permission.WRITE_EXTERNAL_STORAGE",
+            "android.permission.READ_MEDIA_IMAGES",
+            "android.permission.READ_MEDIA_VIDEO",
+            "android.permission.READ_MEDIA_AUDIO",
+        ]:
+            try:
+                adb._run(["shell", "pm", "grant", pkg, perm])
+            except Exception:
+                pass
+        try:
+            adb._run(["shell", "appops", "set", pkg, "MANAGE_EXTERNAL_STORAGE", "allow"])
+        except Exception:
+            pass
+
         adb._run(["shell", "input", "keyevent", "3"])  # KEYCODE_HOME
         time.sleep(0.5)
 
@@ -930,6 +949,13 @@ class TestNotification:
         # # Chọn file không phải Welcome
         # items = find_all(driver, "vl_item_file_name", timeout=10)
         # target = next((el for el in items if "welcome" not in el.text.lower()), None)
+        # driver.terminate_app(pkg)
+        # time.sleep(2)
+        driver.activate_app(pkg)
+        time.sleep(10)
+        RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
+        time.sleep(2)
+        adb._run(["shell", "input", "keyevent", "3"])  # KEYCODE_HOME
 
         # Nếu không có file phù hợp → push file test
         # if target is None:
@@ -991,7 +1017,7 @@ class TestNotification:
             time.sleep(1)
 
         assert noti_found, \
-            f"Không tìm thấy silent notification sau khi đọc 100% file '{file_name}'"
+            f"Không tìm thấy silent notification Complete Reading Now sau khi đọc 100% file '{file_name}'"
         print(f"\n  TC-008 PASS: Silent noti sau khi đọc 100% file '{file_name}'")
 
     # ── TC-009: Silent noti - file 100% từ app khác ──────────────────────────
@@ -1280,11 +1306,12 @@ class TestNotification:
 
         # Click nút action — thử "Read now" trước, fallback "Open"
         
-        clicked = click_notification_by_text(driver, "All Docs PDF Reader", click_button_text="Don't miss out")
+        clicked = click_notification_by_text(driver, "All Docs PDF Reader", click_button_text="Open")
         if not clicked:
             adb._run(["shell", "input", "keyevent", "3"])  # KEYCODE_HOME
             time.sleep(3)
-            clicked = click_notification_by_text(driver, "All Docs PDF Reader", click_button_text="Open")
+            clicked = click_notification_by_text(driver, "All Docs PDF Reader", click_button_text="Don't miss out")
+            
         
         if not clicked:
             open_notification_shade(driver)

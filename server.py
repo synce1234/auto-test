@@ -568,14 +568,37 @@ def api_download_logs(ts):
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Logs
         for fname in files:
-            zf.write(os.path.join(log_dir, fname), fname)
-        zf.writestr("log_total.txt", total_content)
+            zf.write(os.path.join(log_dir, fname), f"logs/{fname}")
+        zf.writestr("logs/log_total.txt", total_content)
+
+        # Videos
+        video_dir = os.path.join(REPORTS_DIR, "videos", ts)
+        if os.path.isdir(video_dir):
+            for fname in sorted(os.listdir(video_dir)):
+                fpath = os.path.join(video_dir, fname)
+                if os.path.isfile(fpath):
+                    zf.write(fpath, f"videos/{fname}")
+
+        # Screenshots
+        screenshot_dir = os.path.join(REPORTS_DIR, "screenshots", ts)
+        if os.path.isdir(screenshot_dir):
+            for fname in sorted(os.listdir(screenshot_dir)):
+                fpath = os.path.join(screenshot_dir, fname)
+                if os.path.isfile(fpath):
+                    zf.write(fpath, f"screenshots/{fname}")
+
+        # Result xlsx (bảng kết quả không có screenshot/video/log)
+        result_xlsx = os.path.join(REPORTS_DIR, f"result_{ts}.xlsx")
+        if os.path.isfile(result_xlsx):
+            zf.write(result_xlsx, f"result_{ts}.xlsx")
+
     buf.seek(0)
     return Response(
         buf.read(),
         mimetype="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="logs_{ts}.zip"'},
+        headers={"Content-Disposition": f'attachment; filename="report_{ts}.zip"'},
     )
 
 

@@ -7,6 +7,7 @@ import re
 import sys
 import base64
 import time
+import threading
 import subprocess
 import pytest
 import yaml
@@ -41,8 +42,10 @@ _VIDEO_DIR      = os.path.join(_REPORTS_ROOT, "videos",      SESSION_TIMESTAMP)
 _LOG_DIR        = os.path.join(_REPORTS_ROOT, "logs",        SESSION_TIMESTAMP)
 
 # Session driver reference — dùng để start recording sớm nhất có thể (trước fixtures)
-_session_driver  = None
+_session_driver   = None
 _recording_active = False  # True khi đang có recording chạy
+_chunked_recorder = None   # ChunkedScreenRecorder instance hiện tại
+_current_test_name: str = "recording"  # Tên test đang chạy (để đặt tên file)
 
 
 # ─── Logging helper ────────────────────────────────────────────────────────────
@@ -349,39 +352,167 @@ def _video_enabled() -> bool:
     return CFG.get("test", {}).get("record_video", False)
 
 
+def _has_ffmpeg() -> bool:
+    try:
+        return subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5).returncode == 0
+    except Exception:
+        return False
+
+
+class ChunkedScreenRecorder:
+    """
+    Quay video theo từng chunk ≤175s bằng adb shell screenrecord,
+    sau đó ghép thành 1 file duy nhất bằng ffmpeg.
+    Fallback: giữ các file _partNN.mp4 riêng lẻ nếu không có ffmpeg.
+    """
+    CHUNK_SECS = 175
+
+    def __init__(self, serial: str = ""):
+        self._adb = ["adb", "-s", serial] if serial else ["adb"]
+        self._chunks: list[str] = []
+        self._local: list[str] = []
+        self._proc = None
+        self._idx = 0
+        self._stop_evt = threading.Event()
+        self._thread = None
+        self._vdir = ""
+        self._name = ""
+
+    def start(self, video_dir: str, name: str):
+        self._vdir = video_dir
+        self._name = name
+        self._chunks.clear()
+        self._local.clear()
+        self._idx = 0
+        self._stop_evt.clear()
+        self._start_chunk()
+        self._thread = threading.Thread(target=self._watch, daemon=True)
+        self._thread.start()
+
+    def _rpath(self, i: int) -> str:
+        return f"/sdcard/Download/__rec_{i:03d}.mp4"
+
+    def _start_chunk(self):
+        rp = self._rpath(self._idx)
+        self._chunks.append(rp)
+        self._proc = subprocess.Popen(
+            self._adb + ["shell", "screenrecord",
+                         "--time-limit", str(self.CHUNK_SECS),
+                         "--bit-rate", "4000000", rp],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self._idx += 1
+
+    def _watch(self):
+        """Background thread: tự động start chunk mới khi chunk cũ hết thời gian."""
+        while not self._stop_evt.is_set():
+            if self._proc and self._proc.poll() is not None and not self._stop_evt.is_set():
+                self._start_chunk()
+            time.sleep(1)
+
+    def stop(self) -> str | None:
+        self._stop_evt.set()
+        # SIGINT khiến screenrecord lưu file và thoát gracefully
+        subprocess.run(self._adb + ["shell", "pkill", "-2", "screenrecord"],
+                       capture_output=True, timeout=5)
+        if self._proc and self._proc.poll() is None:
+            try:
+                self._proc.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+        if self._thread:
+            self._thread.join(timeout=5)
+        time.sleep(1)  # Cho device hoàn tất ghi file
+
+        os.makedirs(self._vdir, exist_ok=True)
+        for i, rp in enumerate(self._chunks):
+            lp = os.path.join(self._vdir, f"__chunk_{i:03d}.mp4")
+            r = subprocess.run(self._adb + ["pull", rp, lp],
+                               capture_output=True, timeout=30)
+            if r.returncode == 0 and os.path.exists(lp) and os.path.getsize(lp) > 0:
+                self._local.append(lp)
+            subprocess.run(self._adb + ["shell", "rm", "-f", rp],
+                           capture_output=True, timeout=10)
+
+        if not self._local:
+            return None
+
+        final = os.path.join(self._vdir, f"{self._name}.mp4")
+
+        if len(self._local) == 1:
+            os.replace(self._local[0], final)
+            return final
+
+        if _has_ffmpeg():
+            lst = os.path.join(self._vdir, "__concat_list.txt")
+            with open(lst, "w") as f:
+                for p in self._local:
+                    f.write(f"file '{p}'\n")
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                 "-i", lst, "-c", "copy", final],
+                capture_output=True, timeout=300,
+            )
+            try:
+                os.remove(lst)
+            except Exception:
+                pass
+            for p in self._local:
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+            if r.returncode == 0 and os.path.exists(final):
+                return final
+
+        # Fallback: đổi tên thành _partNN.mp4
+        parts = []
+        for i, p in enumerate(self._local):
+            part = os.path.join(self._vdir, f"{self._name}_part{i+1:02d}.mp4")
+            try:
+                os.replace(p, part)
+                parts.append(part)
+            except Exception:
+                parts.append(p)
+        return parts[0] if parts else None
+
+
 def _video_quality() -> str:
     return CFG.get("test", {}).get("video_quality", "medium")
 
 
 def _save_video(drv, test_name: str) -> str | None:
-    """Stop recording và lưu video ra file MP4."""
+    """Stop chunked recording và trả về đường dẫn file MP4 cuối cùng."""
+    global _chunked_recorder
+    if not _chunked_recorder:
+        return None
     try:
-        video_b64 = drv.stop_recording_screen()
-        if not video_b64:
-            return None
-        os.makedirs(_VIDEO_DIR, exist_ok=True)
-        path = os.path.join(_VIDEO_DIR, f"{test_name}.mp4")
-        with open(path, "wb") as f:
-            f.write(base64.b64decode(video_b64))
+        path = _chunked_recorder.stop()
         return path
     except Exception as e:
         print(f"\n  [VIDEO SAVE FAILED] {e}")
         return None
+    finally:
+        _chunked_recorder = None
 
 
-def _do_start_recording(drv) -> bool:
-    """Gọi start_recording_screen, trả về True nếu thành công."""
-    global _recording_active
+def _do_start_recording(drv, test_name: str = "recording") -> bool:
+    """Khởi động ChunkedScreenRecorder cho test hiện tại."""
+    global _recording_active, _chunked_recorder
     if _recording_active:
         return True
-    quality_map = {"high": 8000000, "medium": 4000000, "low": 1000000}
-    bit_rate = quality_map.get(_video_quality(), 4000000)
+    if _chunked_recorder:
+        try:
+            _chunked_recorder.stop()
+        except Exception:
+            pass
+        _chunked_recorder = None
+    serial = os.environ.get("TEST_DEVICE_SERIAL", "")
     try:
-        drv.start_recording_screen(
-            video_size="1080x1920",
-            time_limit="600",
-            bit_rate=bit_rate,
-        )
+        os.makedirs(_VIDEO_DIR, exist_ok=True)
+        rec = ChunkedScreenRecorder(serial)
+        rec.start(_VIDEO_DIR, test_name)
+        _chunked_recorder = rec
         _recording_active = True
         return True
     except Exception as e:
@@ -396,11 +527,13 @@ def pytest_runtest_protocol(item, nextitem):
     Đồng thời capture toàn bộ stdout (print) trong test → lưu vào reports/logs/<ts>/.
     """
     import io as _io
-    global _recording_active
+    global _recording_active, _current_test_name
     _recording_active = False  # Reset cho mỗi test
     need_confirm = item.get_closest_marker("need_confirm") is not None
     if _session_driver and (_video_enabled() or need_confirm):
-        _do_start_recording(_session_driver)
+        tc_id = _tc_id_from_item(item)
+        _current_test_name = f"{tc_id}_{item.name}" if tc_id else item.name
+        _do_start_recording(_session_driver, _current_test_name)
 
     # Bắt đầu capture stdout qua tee
     _log_buf      = _io.StringIO()
@@ -509,10 +642,9 @@ def _full_restart_appium_driver(driver_proxy, serial: str = ""):
     _session_driver = driver_proxy
 
     # Driver mới chưa có recording — start lại nếu video đang bật
-    # (hook pytest_runtest_protocol đã start trên driver cũ rồi quit mất)
     if _video_enabled():
         _recording_active = False
-        _do_start_recording(driver_proxy)
+        _do_start_recording(driver_proxy, _current_test_name)
         _log("[RESTART] Recording khởi động lại trên driver mới ✓")
 
     elapsed = time.time() - t0

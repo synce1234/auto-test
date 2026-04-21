@@ -110,6 +110,20 @@ else
   ok "Java đã cài xong"
 fi
 
+# ── ffmpeg ────────────────────────────────────────────────────────────────────
+header "ffmpeg (ghép video chunks)"
+if command -v ffmpeg &>/dev/null; then
+  ok "ffmpeg $(ffmpeg -version 2>&1 | head -1 | awk '{print $3}')"
+else
+  info "Đang cài ffmpeg..."
+  if [[ "$OS" == "Darwin" ]]; then
+    brew install ffmpeg
+  else
+    sudo apt-get install -y ffmpeg
+  fi
+  ok "ffmpeg $(ffmpeg -version 2>&1 | head -1 | awk '{print $3}') đã cài xong"
+fi
+
 # ── Android SDK ───────────────────────────────────────────────────────────────
 header "Android SDK (adb + aapt2)"
 SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
@@ -139,12 +153,20 @@ fi
 
 # ── Appium ────────────────────────────────────────────────────────────────────
 header "Appium"
+_appium_installed=false
 if command -v appium &>/dev/null; then
-  ok "Appium $(appium --version)"
+  _appium_installed=true
+elif npm list -g --depth=0 appium 2>/dev/null | grep -q "appium"; then
+  _appium_installed=true
+fi
+
+if [[ "$_appium_installed" == true ]]; then
+  _appium_ver="$(appium --version 2>/dev/null || echo 'installed')"
+  ok "Appium $_appium_ver (đã cài — bỏ qua)"
 else
   info "Đang cài Appium..."
   npm install -g appium
-  ok "Appium $(appium --version) đã cài xong"
+  ok "Appium $(appium --version 2>/dev/null || echo '') đã cài xong"
 fi
 
 info "Kiểm tra UIAutomator2 driver..."
