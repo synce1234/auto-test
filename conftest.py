@@ -846,17 +846,23 @@ def video_recorder(driver, request):
         yield
         return
 
-    # Chỉ start nếu hook chưa start (thường là test đầu tiên của session)
+    tc_id = _tc_id_from_item(request.node)
+    fname = f"{tc_id}_{request.node.name}" if tc_id else request.node.name
+
+    # Start nếu chưa có recording, hoặc nếu đang recording với tên sai
+    # (xảy ra khi test chạy riêng lẻ: _session_driver=None lúc protocol hook chạy
+    #  → _current_test_name chưa được set → recorder dùng default "recording")
+    wrong_name = _chunked_recorder is not None and _chunked_recorder._name != fname
+    if wrong_name:
+        _recording_active = False  # force restart dù _recording_active=True
     if not _recording_active:
-        _do_start_recording(driver)
+        _do_start_recording(driver, fname)
 
     yield
 
     # ── Teardown: dừng và lưu video ──
     _recording_active = False
 
-    tc_id = _tc_id_from_item(request.node)
-    fname = f"{tc_id}_{request.node.name}" if tc_id else request.node.name
     path  = _save_video(driver, fname)
     if path:
         print(f"\n  [VIDEO] {path}")

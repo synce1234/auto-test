@@ -1692,7 +1692,7 @@ class TestNotification:
         if not noti_found:
             driver.activate_app(pkg)
             adb._run(["shell", "rm", remote_path])
-            pytest.skip("Không có new file notification để test TC-019")
+            assert noti_found, "Không có new file notification để test TC-019"
 
         # Click vào notification để mở app
         clicked = click_notification_by_text(driver, "You have a new file", click_button_text="Read Now")
@@ -1770,7 +1770,7 @@ class TestNotification:
         if not noti_found:
             driver.activate_app(pkg)
             adb._run(["shell", "rm", remote_path])
-            pytest.skip("Không có new file notification để test TC-020")
+            assert noti_found, "Không có new file notification để test TC-020"
 
         # Dùng clear_all_notifications để xóa toàn bộ notification
         clear_all_notifications(driver)
