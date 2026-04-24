@@ -417,10 +417,15 @@ def api_start_run():
                 text=True, bufsize=1,
             )
             _run_proc = proc
+            _dashboard_file = None
             for line in proc.stdout:
                 _emit({"type": "log", "text": line.rstrip()})
+                # Bắt dòng [DASHBOARD] .../dashboard_<ts>.html từ pytest_sessionfinish
+                m = re.search(r"\[DASHBOARD\]\s+.+[/\\](dashboard_\d{8}_\d{6}\.html)", line)
+                if m:
+                    _dashboard_file = m.group(1)
             proc.wait()
-            _emit({"type": "done", "code": proc.returncode})
+            _emit({"type": "done", "code": proc.returncode, "report": _dashboard_file})
         except Exception as e:
             _emit({"type": "log",  "text": f"[ERROR] {e}"})
             _emit({"type": "done", "code": -1})

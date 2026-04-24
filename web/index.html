@@ -1052,18 +1052,8 @@ async function runSelectedTc() {
       } else {
         rerunBtn.style.display = 'none';
       }
-      setTimeout(async () => {
-        try {
-          const rr = await fetch('/api/reports');
-          const rs = await rr.json();
-          if (rs.length) {
-            const btn = document.getElementById('run-open-report');
-            btn.href = `/reports/${rs[0].filename}`;
-            btn.style.display = 'inline-flex';
-          }
-        } catch(_) {}
-        loadTestcases();
-      }, 2500);
+      _showReportBtn(msg.report);
+      loadTestcases();
     }
   };
   _sse.onerror = () => { if (_tcRunning) { _tcRunning = false; setRunning(false); appendLog('[SSE disconnected]'); } };
@@ -1115,18 +1105,8 @@ async function rerunFailedTc() {
       } else {
         rerunBtn.style.display = 'none';
       }
-      setTimeout(async () => {
-        try {
-          const rr = await fetch('/api/reports');
-          const rs = await rr.json();
-          if (rs.length) {
-            const btn = document.getElementById('run-open-report');
-            btn.href = `/reports/${rs[0].filename}`;
-            btn.style.display = 'inline-flex';
-          }
-        } catch(_) {}
-        loadTestcases();
-      }, 2500);
+      _showReportBtn(msg.report);
+      loadTestcases();
     }
   };
   _sse.onerror = () => { if (_tcRunning) { _tcRunning = false; setRunning(false); appendLog('[SSE disconnected]'); } };
@@ -1159,6 +1139,28 @@ function clearTcConsole() {
   document.getElementById('tc-console').innerHTML = '';
   document.getElementById('tc-status-text').textContent = 'Sẵn sàng';
   document.getElementById('tc-status-text').style.color = 'var(--muted)';
+}
+
+// Hiện nút "Xem Report" trỏ đúng vào report vừa được generate.
+// reportFile: tên file từ msg.report (e.g. "dashboard_20260424_103000.html"),
+// hoặc null nếu pytest không in [DASHBOARD] → fallback fetch /api/reports.
+async function _showReportBtn(reportFile) {
+  const btn = document.getElementById('run-open-report');
+  if (reportFile) {
+    btn.href = `/reports/${reportFile}`;
+    btn.style.display = 'inline-flex';
+    return;
+  }
+  // Fallback: đợi 3s rồi lấy report mới nhất từ API
+  await new Promise(r => setTimeout(r, 3000));
+  try {
+    const rr = await fetch('/api/reports');
+    const rs = await rr.json();
+    if (rs.length) {
+      btn.href = `/reports/${rs[0].filename}`;
+      btn.style.display = 'inline-flex';
+    }
+  } catch(_) {}
 }
 
 // ── Reports Tab ────────────────────────────────────────────────────────────────
