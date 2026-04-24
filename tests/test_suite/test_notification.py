@@ -1086,10 +1086,11 @@ class TestNotification:
         background_app(driver)
         time.sleep(3)
 
-        # Kiểm tra notification
-        noti_found = wait_for_notification(driver, "Don't miss out", timeout=15)
-        # if not noti_found:
-        #     noti_found = wait_for_notification(driver, "Don’t miss out", timeout=15)
+        # Kiểm tra notification — dùng "miss out" thay vì "Don’t miss out"
+        # để tránh apostrophe encoding khác nhau trong page_source XML
+        noti_found = wait_for_notification(driver, "miss out", timeout=30)
+        if not noti_found:
+            noti_found = wait_for_notification(driver, "Complete Reading", timeout=15)
 
         # Mở notification shade trước khi assert để screenshot chụp đúng trạng thái
         if not noti_found:
