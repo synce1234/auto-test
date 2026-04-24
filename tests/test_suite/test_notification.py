@@ -575,6 +575,23 @@ class TestNotification:
         # Dismiss onboarding nếu có (Language screen, etc.)
         go_to_home(driver, cfg)
 
+        # Phát hiện và bỏ qua dialog xin quyền notification bằng driver
+        try:
+            deny_btn = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((
+                    AppiumBy.XPATH,
+                    '//*[@resource-id="com.android.permissioncontroller:id/permission_deny_button"]'
+                    ' | //*[@text="Don\'t allow"]'
+                    ' | //*[@text="Don\'t Allow"]'
+                    ' | //*[@text="Không cho phép"]',
+                ))
+            )
+            print(f"\n  [PERM] Phát hiện dialog notification permission → deny")
+            deny_btn.click()
+            time.sleep(1)
+        except TimeoutException:
+            print(f"\n  [PERM] Không có dialog permission, tiếp tục")
+
         # Mở sidebar menu
         assert open_sidebar_menu(driver), "Không mở được sidebar menu"
         time.sleep(1)
