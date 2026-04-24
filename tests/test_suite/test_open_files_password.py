@@ -33,6 +33,7 @@ from tests.helpers import (
     go_to_home, dismiss_ads, _is_ad_showing, ensure_app_foreground,
     wait_uia2_ready,
 )
+from tests.utils.robust_driver import RobustDriver
 
 PKG = "pdf.reader.pdf.viewer.all.document.reader.office.viewer"
 PASSWORD_CORRECT = "kanbanery"
@@ -1056,9 +1057,7 @@ class TestRememberPassword:
             pytest.skip("Không có file PDF có password để test")
         opened = open_password_pdf_from_home(driver, adb, cfg, remote_path=remote_path)
         assert opened, "Không tìm thấy file trong danh sách"
-        if _is_ad_showing(driver):
-            dismiss_ads(driver)
-            time.sleep(1)
+        RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
         dialog = wait_for_password_dialog(driver, timeout=15)
         if not dialog:
             pytest.skip("Dialog nhập password không xuất hiện")
