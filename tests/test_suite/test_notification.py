@@ -575,7 +575,9 @@ class TestNotification:
         # Dismiss onboarding nếu có (Language screen, etc.)
         go_to_home(driver, cfg)
 
-        # Phát hiện và bỏ qua dialog xin quyền notification bằng driver
+        # Phát hiện và bỏ qua dialog xin quyền notification
+        # Dialog có thể là system permission hoặc custom in-app dialog (ảnh đính kèm)
+        _denied = False
         try:
             deny_btn = WebDriverWait(driver, 5).until(
                 EC.presence_of_element_located((
@@ -589,8 +591,26 @@ class TestNotification:
             print(f"\n  [PERM] Phát hiện dialog notification permission → deny")
             deny_btn.click()
             time.sleep(1)
+            _denied = True
         except TimeoutException:
-            print(f"\n  [PERM] Không có dialog permission, tiếp tục")
+            print(f"\n  [PERM] Không tìm thấy deny button qua Appium")
+
+        # Nếu chưa deny được, kiểm tra activity hiện tại
+        # Nếu không phải MainActivity → có thể đang bị chặn bởi dialog → nhấn BACK
+        if not _denied:
+            try:
+                _cur_act = driver.current_activity or ""
+            except Exception:
+                _cur_act = ""
+            if "MainActivity" not in _cur_act:
+                print(f"\n  [PERM] Activity={_cur_act!r}, không phải MainActivity → nhấn BACK")
+                try:
+                    driver.press_keycode(4)  # BACK
+                    time.sleep(1)
+                    _cur_act2 = driver.current_activity or ""
+                    print(f"\n  [PERM] Sau BACK: activity={_cur_act2!r}")
+                except Exception as _e:
+                    print(f"\n  [PERM] BACK thất bại: {_e}")
 
         # Mở sidebar menu
         assert open_sidebar_menu(driver), "Không mở được sidebar menu"
