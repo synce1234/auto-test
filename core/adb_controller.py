@@ -79,9 +79,7 @@ class ADBController:
             print(f"  [ERROR] APK không tồn tại: {apk_path}")
             return False
 
-        cmd = ["install"]
-        if replace:
-            cmd.append("-r")  # replace existing app, giữ data
+        cmd = ["install", "-r"]  # -r luôn để tránh INSTALL_FAILED_ALREADY_EXISTS
         cmd.append(apk_path)
 
         code, out, err = self._run(cmd, timeout=120)
@@ -89,15 +87,49 @@ class ADBController:
 
         if not success and "INSTALL_FAILED_INSUFFICIENT_STORAGE" in (err or out):
             print("  [WARN] Không đủ bộ nhớ, đang dọn cache và thử lại...")
-            self._run(["shell", "pm", "trim-caches", "512M"], timeout=30)
+            _, df_out, _ = self._run(["shell", "df", "/data"], timeout=10)
+            print(f"  [STORAGE] {df_out.strip()}")
+            self._run(["shell", "pm", "trim-caches", "1G"], timeout=30)
+            self._run(["shell", "rm", "-rf", "/data/local/tmp/*"], timeout=10)
+            import time as _time; _time.sleep(2)
             code, out, err = self._run(cmd, timeout=120)
             success = code == 0 and "Success" in out
+            if not success:
+                # Fallback: uninstall rồi cài fresh (staging area bị kẹt)
+                print("  [WARN] Thử uninstall → install fresh...")
+                pkg = self._get_package_name_from_apk(apk_path)
+                if pkg:
+                    self._run(["uninstall", pkg], timeout=30)
+                    _time.sleep(1)
+                code, out, err = self._run(cmd, timeout=120)
+                success = code == 0 and "Success" in out
+                if not success:
+                    _, df_out2, _ = self._run(["shell", "df", "/data"], timeout=10)
+                    print(f"  [STORAGE after cleanup] {df_out2.strip()}")
 
         if success:
             print(f"  [OK] Cài thành công: {os.path.basename(apk_path)}")
         else:
             print(f"  [FAIL] Cài thất bại: {err or out}")
         return success
+
+    def _get_package_name_from_apk(self, apk_path: str) -> str:
+        """Lấy package name từ APK bằng aapt hoặc aapt2."""
+        for tool in ["aapt", "aapt2"]:
+            try:
+                import subprocess
+                r = subprocess.run(
+                    [tool, "dump", "badging", apk_path],
+                    capture_output=True, text=True, timeout=15,
+                )
+                for line in r.stdout.splitlines():
+                    if line.startswith("package:"):
+                        for part in line.split():
+                            if part.startswith("name="):
+                                return part.split("=", 1)[1].strip("'\"")
+            except Exception:
+                continue
+        return ""
 
     def uninstall_app(self, package_name: str) -> bool:
         """Gỡ cài đặt app (xóa luôn data)"""

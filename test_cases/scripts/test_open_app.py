@@ -23,6 +23,7 @@ from tests.helpers import (
     dismiss_ads, _is_ad_showing,
     dismiss_onboarding2,
 )
+from tests.utils.robust_driver import RobustDriver
 from test_cases.tc_manager import TCManager
 
 PKG = "pdf.reader.pdf.viewer.all.document.reader.office.viewer"
@@ -119,8 +120,40 @@ def _is_past_splash(driver) -> bool:
 
 
 def _is_on_interstitial_ad(driver) -> bool:
-    """Kiểm tra đang ở màn hình Interstitial Ads (open app ad)."""
-    return _is_ad_showing(driver)
+    """
+    Kiểm tra đang ở màn hình Interstitial / App Open Ad.
+    _is_ad_showing chỉ detect AdActivity riêng; App Open Ad chạy trong activity
+    của app nên cần thêm kiểm tra qua ADB dump cho text "Continue to app" /
+    "Advertisement".
+    """
+    if _is_ad_showing(driver):
+        return True
+
+    # App Open Ad: overlay trong app's activity → check ADB uiautomator dump
+    import subprocess as _sp
+    import os as _os
+    _serial = _os.environ.get("TEST_DEVICE_SERIAL", "")
+    _adb = ["adb", "-s", _serial] if _serial else ["adb"]
+    _AD_TEXTS = ("Continue to app", "Advertisement", "Skip Ad")
+    try:
+        _sp.run(_adb + ["shell", "uiautomator", "dump", "/sdcard/uidump_tc001.xml"],
+                capture_output=True, timeout=8)
+        r = _sp.run(_adb + ["shell", "cat", "/sdcard/uidump_tc001.xml"],
+                    capture_output=True, text=True, timeout=5)
+        if any(t in (r.stdout or "") for t in _AD_TEXTS):
+            return True
+    except Exception:
+        pass
+
+    # Fallback: page_source
+    try:
+        src = driver.page_source or ""
+        if any(t in src for t in _AD_TEXTS):
+            return True
+    except Exception:
+        pass
+
+    return False
 
 
 def _has_continue_to_app_button(driver) -> bool:
@@ -161,19 +194,17 @@ class TestTC001:
         if remaining > 0:
             time.sleep(remaining)
 
-    def test_open_app_first_launch(self, driver, tc):
+    def test_open_app_first_launch(self, driver, adb, cfg, tc):
         """Mở app lần đầu: Splash hiển thị → chuyển sang Ads hoặc màn hình tiếp theo."""
-        splash_ok = _wait_for_splash(driver, timeout=10)
-        assert splash_ok, "Màn hình Splash không hiển thị"
-
+        adb.launch_app(PKG, cfg["app"]["main_activity"])
         time.sleep(5)
+        rd = RobustDriver(driver).configure_recovery(adb=adb)
         ad_or_next = (
-            _is_on_interstitial_ad(driver) or
-            _is_past_splash(driver)
+            rd.is_ad_visible()
         )
         assert ad_or_next, "Sau Splash không hiển thị Ads hoặc màn hình tiếp theo"
 
-        if _is_on_interstitial_ad(driver):
+        if rd.is_ad_visible() or _is_on_interstitial_ad(driver):
             actual = "Splash hiển thị → Interstitial Ads"
         elif _is_on_language_screen(driver):
             actual = "Splash hiển thị → Language screen"

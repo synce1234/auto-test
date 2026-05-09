@@ -385,11 +385,20 @@ def api_start_run():
 
                 # Bước 2: Cài APK mới
                 _emit({"type": "log", "text": f"[INSTALL] Cài {apk_fname}..."})
-                r = subprocess.run(
-                    adb_prefix + ["install", apk_path],
-                    capture_output=True, text=True, timeout=120
-                )
+                install_cmd = adb_prefix + ["install", "-r", apk_path]
+                r = subprocess.run(install_cmd, capture_output=True, text=True, timeout=120)
                 ok = r.returncode == 0 and "Success" in r.stdout
+
+                if not ok and "INSTALL_FAILED_INSUFFICIENT_STORAGE" in (r.stdout + r.stderr):
+                    _emit({"type": "log", "text": "[INSTALL] Không đủ bộ nhớ, đang dọn cache..."})
+                    subprocess.run(adb_prefix + ["shell", "pm", "trim-caches", "1G"],
+                                   capture_output=True, timeout=30)
+                    subprocess.run(adb_prefix + ["shell", "rm", "-rf", "/data/local/tmp/*"],
+                                   capture_output=True, timeout=10)
+                    time.sleep(2)
+                    r = subprocess.run(install_cmd, capture_output=True, text=True, timeout=120)
+                    ok = r.returncode == 0 and "Success" in r.stdout
+
                 if ok:
                     _emit({"type": "log", "text": f"[INSTALL] OK ✓ {r.stdout.strip()}"})
                 else:

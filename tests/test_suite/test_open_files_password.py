@@ -1018,7 +1018,7 @@ def _handle_chooser(adb, driver, option_text: str = None):
 # ─── Test Class ───────────────────────────────────────────────────────────────
 
 class TestRememberPassword:
-    """TC-006 đến TC-011: Kiểm tra Cancel dialog và Remember Password."""
+    """TC-023 đến TC-025, TC-008 đến TC-011: Kiểm tra Cancel dialog và Remember Password."""
 
     @pytest.fixture(scope="class", autouse=True)
     def _class_clear_passwords(self, cfg):
@@ -1072,9 +1072,9 @@ class TestRememberPassword:
             pytest.skip("Dialog nhập password không xuất hiện")
         return True
 
-    # ── TC-006: Nhập đúng pass → click Cancel ────────────────────────────────
+    # ── TC-023: Nhập đúng pass → click Cancel ────────────────────────────────
 
-    @pytest.mark.tc_id("TC-006")
+    @pytest.mark.tc_id("TC-023")
     def test_tc006_correct_password_click_cancel(self, driver, adb, cfg):
         """
         TC-006: Nhập đúng pass mở file → click Cancel
@@ -1098,9 +1098,9 @@ class TestRememberPassword:
         assert not dialog_showing, "Dialog vẫn còn hiển thị sau khi click Cancel"
         print("\n  TC-006 PASS: Nhập đúng pass → Cancel → file không mở, dialog đóng")
 
-    # ── TC-007: Nhập sai pass + Remember → click OK ──────────────────────────
+    # ── TC-024: Nhập sai pass + Remember → click OK ──────────────────────────
 
-    @pytest.mark.tc_id("TC-007")
+    @pytest.mark.tc_id("TC-024")
     def test_tc007_wrong_password_with_remember_click_ok(self, driver, adb, cfg):
         """
         TC-007: Nhập sai pass + chọn Remember → click OK
