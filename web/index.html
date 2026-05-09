@@ -295,6 +295,7 @@ select option { background: var(--surface); }
 
 <header>
   <h1>Auto Test Dashboard</h1>
+  <span id="tool-version" style="font-size:11px;color:var(--muted);margin-left:4px;"></span>
   <span class="badge">PDF Reader</span>
   <nav>
     <button class="active" onclick="switchTab('apks',this)">APKs</button>
@@ -1300,6 +1301,10 @@ async function saveSettings() {
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 loadApks();
+fetch('/api/version').then(r => r.json()).then(d => {
+  const el = document.getElementById('tool-version');
+  if (el && d.version) el.textContent = 'v' + d.version;
+});
 </script>
 </body>
 </html>

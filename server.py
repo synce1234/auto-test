@@ -2,12 +2,15 @@
 """
 Auto Test Web Dashboard - Local web server
 
+Version: 1.0.0.1_260509
+
 Cách chạy:
   python server.py                        # dùng thư mục chứa script
   python server.py --dir /path/to/proj   # chỉ định thư mục project
   python server.py --port 9090           # đổi port (mặc định 8080)
   → Mở trình duyệt: http://localhost:8080
 """
+__version__ = "1.0.0.1_260509"
 import io
 import os
 import re
@@ -82,6 +85,11 @@ _run_proc: subprocess.Popen | None = None
 @app.route("/")
 def index():
     return send_from_directory(os.path.join(BASE_DIR, "web"), "index.html")
+
+
+@app.route("/api/version")
+def api_version():
+    return jsonify({"version": __version__})
 
 
 # ── API: APKs ─────────────────────────────────────────────────────────────────
@@ -625,6 +633,6 @@ def serve_report(filename):
 
 if __name__ == "__main__":
     port = _args.port
-    print(f"\n  Auto Test Dashboard  →  http://localhost:{port}")
+    print(f"\n  Auto Test Dashboard  v{__version__}  →  http://localhost:{port}")
     print(f"  Project dir          :  {BASE_DIR}\n")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
