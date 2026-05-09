@@ -567,6 +567,16 @@ def _is_note_popup_visible(driver, adb=None, timeout=15) -> bool:
 
     _note_rids = {f"{PKG}:id/backgroundNoteEdit", f"{PKG}:id/tvNoteEdit"}
 
+    def _check_via_driver() -> bool:
+        try:
+            for _rid in _note_rids:
+                _els = driver.find_elements(AppiumBy.ID, _rid)
+                if _els and _els[0].is_displayed():
+                    return True
+        except Exception:
+            pass
+        return False
+
     def _check_via_adb(_adb_obj) -> bool:
         """Dùng ADB dump để tìm note popup elements.
         Xóa file cũ trước để tránh đọc stale data khi dump thất bại."""
@@ -594,6 +604,8 @@ def _is_note_popup_visible(driver, adb=None, timeout=15) -> bool:
         import re as _re_note_ad
         deadline = time.time() + timeout
         while time.time() < deadline:
+            if _check_via_driver():
+                return True
             if _check_via_adb(adb):
                 return True
             # AppOpenAd có thể xuất hiện và kill uiautomator dump → dismiss qua ADB
@@ -645,9 +657,18 @@ def _is_note_edit_visible(driver, adb=None, timeout=10) -> bool:
 
     _edit_rid = f"{PKG}:id/tvNoteEdit"
 
+    def _check_edit_via_driver() -> bool:
+        try:
+            _els = driver.find_elements(AppiumBy.ID, _edit_rid)
+            return bool(_els and _els[0].is_displayed())
+        except Exception:
+            return False
+
     if adb is not None:
         deadline = time.time() + timeout
         while time.time() < deadline:
+            if _check_edit_via_driver():
+                return True
             try:
                 # Guard: chooser đang mở → skip (tránh false positive từ stale dump)
                 _, _focus_out, _ = adb._run(["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"])
@@ -1298,6 +1319,7 @@ class TestOpenFilesOther:
         adb_prefix = ["adb", "-s", serial] if serial else ["adb"]
         # for _pkg in ["io.appium.uiautomator2.server", "io.appium.uiautomator2.server.test"]:
         #     _sp.run(adb_prefix + ["shell", "am", "force-stop", _pkg], capture_output=True)
+        
         _sp.run(adb_prefix + ["shell", "input", "keyevent", "3"], capture_output=True)
         time.sleep(1)
     
@@ -1347,6 +1369,10 @@ class TestOpenFilesOther:
         TC-027: Mở file PPT/PPTX từ app khác
         Expected: Show ads + reader mở
         """
+        go_to_home(driver, cfg)
+        time.sleep(5)
+        adb._run(["shell", "input", "keyevent", "3"])  # HOME
+        time.sleep(1)
         if not os.path.exists(_res("sample.pptx")):
             pytest.skip("Không có sample.pptx để test")
 
@@ -1457,6 +1483,10 @@ class TestOpenFilesOther:
         TC-030: Mở file EPUB từ app khác
         Expected: Show ads + reader mở
         """
+        go_to_home(driver, cfg)
+        time.sleep(5)
+        adb._run(["shell", "input", "keyevent", "3"])  # HOME
+        time.sleep(1)
         if not os.path.exists(_res("sample.epub")):
             pytest.skip("Không có sample.epub để test")
 
@@ -1598,6 +1628,10 @@ class TestOpenFilesOther:
         TC-034: Mở file TXT từ app khác
         Expected: Reader mở
         """
+        go_to_home(driver, cfg)
+        time.sleep(5)
+        adb._run(["shell", "input", "keyevent", "3"])  # HOME
+        time.sleep(1)
         if not os.path.exists(_res("sample.txt")):
             pytest.skip("Không có sample.txt để test")
 
@@ -2298,6 +2332,10 @@ class TestOpenFilesOther:
         TC-047: Mở file PNG từ app khác
         Expected: Reader mở + toolbar hiển thị (back, note, search, star, More)
         """
+        go_to_home(driver, cfg)
+        time.sleep(5)
+        adb._run(["shell", "input", "keyevent", "3"])  # HOME
+        time.sleep(1)
         if not os.path.exists(_res("sample.png")):
             pytest.skip("Không có sample.png để test")
 
@@ -2338,6 +2376,10 @@ class TestOpenFilesOther:
         TC-048: Mở file JPG/JPEG từ app khác
         Expected: Reader mở + toolbar hiển thị (back, note, search, star, More)
         """
+        go_to_home(driver, cfg)
+        time.sleep(5)
+        adb._run(["shell", "input", "keyevent", "3"])  # HOME
+        time.sleep(1)
         if not os.path.exists(_res("sample.jpg")):
             pytest.skip("Không có sample.jpg để test")
 
@@ -2375,6 +2417,10 @@ class TestOpenFilesOther:
         TC-049: Mở file GIF từ app khác
         Expected: Reader mở + toolbar hiển thị (back, note, search, star, More)
         """
+        go_to_home(driver, cfg)
+        time.sleep(5)
+        adb._run(["shell", "input", "keyevent", "3"])  # HOME
+        time.sleep(1)
         if not os.path.exists(_res("sample.gif")):
             pytest.skip("Không có sample.gif để test")
 
@@ -2412,6 +2458,10 @@ class TestOpenFilesOther:
         TC-050: Mở file WEBP từ app khác
         Expected: Reader mở + toolbar hiển thị (back, note, search, star, More)
         """
+        go_to_home(driver, cfg)
+        time.sleep(5)
+        adb._run(["shell", "input", "keyevent", "3"])  # HOME
+        time.sleep(1)
         if not os.path.exists(_res("sample.webp")):
             pytest.skip("Không có sample.webp để test")
 
@@ -2449,6 +2499,10 @@ class TestOpenFilesOther:
         TC-051: Mở file HEIC từ app khác
         Expected: Reader mở + toolbar hiển thị (back, note, star)
         """
+        go_to_home(driver, cfg)
+        time.sleep(5)
+        adb._run(["shell", "input", "keyevent", "3"])  # HOME
+        time.sleep(1)
         if not os.path.exists(_res("sample.heic")):
             pytest.skip("Không có sample.heic để test")
 
@@ -2487,6 +2541,10 @@ class TestOpenFilesOther:
         TC-052: Mở file SVG+XML từ app khác
         Expected: Reader mở + toolbar hiển thị (back, search, star)
         """
+        go_to_home(driver, cfg)
+        time.sleep(5)
+        adb._run(["shell", "input", "keyevent", "3"])  # HOME
+        time.sleep(1)
         if not os.path.exists(_res("sample.svg")):
             pytest.skip("Không có sample.svg để test")
 
@@ -2640,7 +2698,9 @@ class TestOpenFilesOther:
         def _adb_home():
             _sp_ws.run(_adb_ws + ["shell", "input", "keyevent", "3"],
                        capture_output=True, timeout=5)
-
+            
+        go_to_home(driver, cfg)
+        time.sleep(5)
         _adb_home()
         time.sleep(5)
 
@@ -2704,14 +2764,21 @@ class TestOpenFilesOther:
         Expected: File xuất hiện trong tab Star sau khi bấm nút Star
         """
         # Close recent app state bằng lifecycle command (shared helper)
-        close_recentapp2(driver, adb, pkg=PKG)
+        # close_recentapp2(driver, adb, pkg=PKG)
+        go_to_home(driver, cfg)
+        time.sleep(5)
+        adb._run(["shell", "input", "keyevent", "3"])  # HOME
+        time.sleep(1)
         if not os.path.exists(_res("sample.docx")):
             pytest.skip("Không có sample.docx để test")
-
-        _push(adb, "sample.docx", REMOTE_DOCX_PATH)
+            
+        # Tên file unique theo timestamp để tránh nhầm với file cũ còn trong Star list
+        _docx_stem = f"tc018_star_{int(time.time())}"
+        _docx_remote = f"/sdcard/Download/{_docx_stem}.docx"
+        _push(adb, "sample.docx", _docx_remote)
 
         # Mở file qua intent (chooser → chọn "All Docs PDF Reader" = standard VIEW)
-        _open_via_intent(adb, f"file://{REMOTE_DOCX_PATH}", MIME_DOCX)
+        _open_via_intent(adb, f"file://{_docx_remote}", MIME_DOCX)
         _handle_chooser(adb, driver)
 
         # Sau khi chooser đóng, UiA2 có thể crash/restart — recover trước khi assert UI
@@ -2730,7 +2797,7 @@ class TestOpenFilesOther:
         # Nếu reader chưa mở do timing/UiA2 crash, retry mở intent 1 lần
         reader_open = _wait_reader_open(driver, timeout=25)
         if not reader_open:
-            _open_via_intent(adb, f"file://{REMOTE_DOCX_PATH}", MIME_DOCX)
+            _open_via_intent(adb, f"file://{_docx_remote}", MIME_DOCX)
             _handle_chooser(adb, driver)
             _ensure_uia2_alive(driver, adb, cfg)
             try:
@@ -2747,7 +2814,7 @@ class TestOpenFilesOther:
         # Đóng keyboard nếu đang mở (Phase 2 có thể tap vào document làm keyboard bật lên)
         try:
             driver.hide_keyboard()
-            time.sleep(0.5)
+            time.sleep(5)
         except Exception:
             pass
 
@@ -2777,40 +2844,54 @@ class TestOpenFilesOther:
                 pass
             return False
 
-        # Lấy kích thước màn hình để tap center (reveal toolbar)
-        try:
-            _, _wm_out, _ = adb._run(["shell", "wm", "size"])
-            _wm = _re2.search(r"(\d+)x(\d+)", _wm_out or "")
-            _scr_w, _scr_h = (int(_wm.group(1)), int(_wm.group(2))) if _wm else (1080, 2400)
-        except Exception:
-            _scr_w, _scr_h = 1080, 2400
+        # Toolbar auto-hide → chỉ tap center khi star button chưa visible để tránh click 2 lần
+        # star_tapped = False
+        # for _ in range(3):
+        #     _star_visible = driver.find_elements(AppiumBy.ID, f"{PKG}:id/imv_toolbar_star")
+        #     if not _star_visible:
+        #         try:
+        #             _sz = driver.get_window_size()
+        #             driver.tap([(_sz["width"] // 2, _sz["height"] // 2)])
+        #             time.sleep(1.2)
+        #         except Exception:
+        #             pass
+        #     try:
+        #         _star_el = WebDriverWait(driver, 3).until(
+        #             EC.element_to_be_clickable((AppiumBy.ID, f"{PKG}:id/imv_toolbar_star"))
+        #         )
+        #         _star_el.click()
+        #         star_tapped = True
+        #         break
+        #     except Exception:
+        #         pass
+        #     time.sleep(0.8)
 
-        # Toolbar auto-hide sau vài giây → tap center màn hình để reveal, rồi thử dump
-        # Retry tối đa 3 lần: tap center → wait → dump → tìm star
+        # if not star_tapped:
+        #     star_tapped = _adb_tap_by_rid("imv_toolbar_star")
+        # assert star_tapped, "Không thể tap nút Star (imv_toolbar_star)"
+        # time.sleep(1)
+        
+        # Tap center để toolbar hiện ra (toolbar auto-hide khi đọc file)
+        _sz = driver.get_window_size()
+        adb._run(["shell", "input", "tap", str(_sz["width"] // 2), str(_sz["height"] // 2)])
+        time.sleep(1.2)
+
+        # Bấm nút Star bằng Appium — retry 3 lần, mỗi lần tap center để show toolbar nếu cần
         star_tapped = False
-        for _star_attempt in range(3):
-            print(f"  [STAR] attempt {_star_attempt + 1}/3: tap center ({_scr_w // 2},{_scr_h // 2}) để reveal toolbar")
-            adb._run(["shell", "input", "tap", str(_scr_w // 2), str(_scr_h // 2)])
-            time.sleep(1.2)
-            if _adb_tap_by_rid("imv_toolbar_star"):
+        for _ in range(3):
+            try:
+                _star_el = WebDriverWait(driver, 3).until(
+                    EC.element_to_be_clickable((AppiumBy.ID, f"{PKG}:id/imv_toolbar_star"))
+                )
+                _star_el.click()
                 star_tapped = True
                 break
-            time.sleep(0.8)
-        
-        if not star_tapped:
-            print("Try again with Appium")
-            try:
-                star_btn = WebDriverWait(driver, 8).until(
-                    EC.element_to_be_clickable(
-                        (AppiumBy.ID, f"{PKG}:id/imv_toolbar_star")
-                    )
-                )
-                star_btn.click()
-                star_tapped = True
-            except:
-                pass
-        assert star_tapped, "Không thể tap nút Star (imv_toolbar_star) qua ADB dump"
-        time.sleep(1)
+            except Exception:
+                # Toolbar có thể đã hide lại → tap center để hiện lại
+                driver.tap([(_sz["width"] // 2, _sz["height"] // 2)])
+                time.sleep(1.0)
+        assert star_tapped, "Không thể tap nút Star (imv_toolbar_star)"
+        time.sleep(1.0)
 
         # Quay lại màn main của app qua ADB BACK
         adb._run(["shell", "input", "keyevent", "4"])   # KEYCODE_BACK
@@ -2827,10 +2908,27 @@ class TestOpenFilesOther:
                     return True
                 time.sleep(delay)
             return False
-
-        star_tab_tapped = _adb_tap_by_rid_wait("layoutStar", retries=5, delay=1.0)
         
-        assert star_tab_tapped, "Không thể tap tab Star (layoutStar) qua ADB dump"
+        # Phát hiện exit dialog "Do you like PDF Reader?" (có imv_close_rate) → nhấn Back để đóng
+        try:
+            if driver.find_elements(AppiumBy.ID, f"{PKG}:id/imv_close_rate"):
+                driver.press_keycode(4)  # BACK
+                time.sleep(0.8)
+        except Exception:
+            pass
+        
+        time.sleep(1.5)
+        star_tab_tapped = False
+        try:
+            _star_btn = driver.find_element(
+                AppiumBy.XPATH,
+                '//*[@text="Star" or @content-desc="Star"]',
+            )
+            _star_btn.click()
+            star_tab_tapped = True
+        except Exception:
+            star_tab_tapped = _adb_tap_by_rid_wait("layoutStar", retries=5, delay=1.0)
+        assert star_tab_tapped, "Không thể tap tab Star"
         time.sleep(1.5)
 
         # Tap nút filter (imv_filter_file) → chọn "All files" qua ADB dump
@@ -2860,8 +2958,18 @@ class TestOpenFilesOther:
         _adb_tap_by_text("All files")
         time.sleep(1.0)
 
-        # Kiểm tra file "sample_docx_autotest" xuất hiện trong danh sách Star tab qua ADB dump
-        def _adb_file_in_star() -> bool:
+        # Kiểm tra file _docx_stem xuất hiện trong danh sách Star tab
+        def _file_in_star() -> bool:
+            # Thử driver trước (nhanh, không cần dump)
+            try:
+                els = driver.find_elements(AppiumBy.ID, f"{PKG}:id/vl_item_file_name")
+                names = [el.text or "" for el in els]
+                print(f"\n  [STAR_CHECK] driver found {len(names)} item(s): {names}")
+                if any(_docx_stem in n for n in names):
+                    return True
+            except Exception as _e:
+                print(f"\n  [STAR_CHECK] driver error: {_e}")
+            # Fallback: ADB dump
             try:
                 adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_star_list.xml"])
                 _, _xml, _ = adb._run(["shell", "cat", "/sdcard/uidump_star_list.xml"])
@@ -2871,7 +2979,7 @@ class TestOpenFilesOther:
                 _full_rid = f"{PKG}:id/vl_item_file_name"
                 for _n in _r.iter("node"):
                     if _n.get("resource-id", "") == _full_rid:
-                        if "sample_docx_autotest" in _n.get("text", ""):
+                        if _docx_stem in _n.get("text", ""):
                             return True
             except Exception:
                 pass
@@ -2880,7 +2988,7 @@ class TestOpenFilesOther:
         # Thử tối đa 3 lần (scroll nếu cần)
         in_star = False
         for _ in range(3):
-            if _adb_file_in_star():
+            if _file_in_star():
                 in_star = True
                 break
             # Scroll down nhẹ rồi thử lại
@@ -2888,6 +2996,11 @@ class TestOpenFilesOther:
             time.sleep(0.8)
 
         assert in_star, "File không xuất hiện trong tab Star sau khi bấm nút Star"
+
+        try:
+            adb._run(["shell", "rm", "-f", _docx_remote])
+        except Exception:
+            pass
 
         print("\n  TC-018 PASS: Doc/Docx mark favourite → file xuất hiện trong Star tab")
 
@@ -2903,7 +3016,12 @@ class TestOpenFilesOther:
         """
         if not os.path.exists(_res("sample.docx")):
             pytest.skip("Không có sample.docx để test")
-
+            
+        go_to_home(driver, cfg)
+        time.sleep(5)
+        adb._run(["shell", "input", "keyevent", "3"])  # HOME
+        time.sleep(1)
+        
         _push(adb, "sample.docx", REMOTE_DOCX_PATH)
 
         _open_via_intent(adb, f"file://{REMOTE_DOCX_PATH}", MIME_DOCX)
@@ -2941,6 +3059,10 @@ class TestOpenFilesOther:
         #     time.sleep(1)
         # except Exception:
         #     pass
+        go_to_home(driver, cfg)
+        time.sleep(5)
+        adb._run(["shell", "input", "keyevent", "3"])  # HOME
+        time.sleep(1)
         if not os.path.exists(_res("sample.xlsx")):
             pytest.skip("Không có sample.xlsx để test")
         
@@ -2974,6 +3096,10 @@ class TestOpenFilesOther:
         TC-055: Mở file Excel từ app khác với action Note to File
         Expected: Reader mở + note popup hiện + keyboard focused
         """
+        go_to_home(driver, cfg)
+        time.sleep(5)
+        adb._run(["shell", "input", "keyevent", "3"])  # HOME
+        time.sleep(1)
         if not os.path.exists(_res("sample.xlsx")):
             pytest.skip("Không có sample.xlsx để test")
 
@@ -3009,6 +3135,10 @@ class TestOpenFilesOther:
         TC-056: Mở file PDF từ app khác (basic open)
         Expected: Reader mở thành công
         """
+        go_to_home(driver, cfg)
+        time.sleep(5)
+        adb._run(["shell", "input", "keyevent", "3"])  # HOME
+        time.sleep(1)
         if not os.path.exists(_res("sample_simple.pdf")):
             pytest.skip("Không có sample_simple.pdf để test")
 
@@ -3517,14 +3647,27 @@ class TestWelcomeAndSelection:
         assert installed, "Không cài được APK"
 
         # Grant MANAGE_EXTERNAL_STORAGE qua ADB trước khi launch (fresh install reset permission)
-        # go_to_home sẽ không cần vào Settings để grant nữa → app thấy file ngay
         pkg = cfg["app"]["package_name"]
         adb._run(["shell", "appops", "set", pkg, "MANAGE_EXTERNAL_STORAGE", "allow"])
+        # Grant POST_NOTIFICATIONS để tránh notification dialog xuất hiện giữa onboarding
+        # làm vượt quá deadline 90s của dismiss_onboarding
+        adb._run(["shell", "pm", "grant", pkg, "android.permission.POST_NOTIFICATIONS"])
         time.sleep(1)
 
-        # go_to_home xử lý: activate → Language → notification → home
-        # (Settings "manage files" không xuất hiện vì permission đã grant qua ADB)
-        reached_home = go_to_home(driver, cfg)
+        # Fresh install → phải qua onboarding (Language → permission dialog → home)
+        # dismiss_onboarding xử lý đúng các bước này; go_to_home chỉ dùng sau khi đã onboard
+        from tests.helpers import dismiss_onboarding as _dismiss_onboarding
+        try:
+            driver.activate_app(pkg)
+        except Exception:
+            import subprocess as _sp13
+            _serial13 = os.environ.get("TEST_DEVICE_SERIAL", "")
+            _adb13 = ["adb", "-s", _serial13] if _serial13 else ["adb"]
+            _sp13.run(_adb13 + ["shell", "monkey", "-p", pkg,
+                                 "-c", "android.intent.category.LAUNCHER", "1"],
+                      capture_output=True, timeout=8)
+        time.sleep(2)
+        reached_home = _dismiss_onboarding(driver, cfg)
         assert reached_home, "Không về được màn Home sau onboarding"
         time.sleep(3)  # chờ app scan và hiển thị file
 
@@ -3551,6 +3694,8 @@ class TestWelcomeAndSelection:
 
         # Đảm bảo permission đã grant
         adb._run(["shell", "appops", "set", pkg, "MANAGE_EXTERNAL_STORAGE", "allow"])
+        # Grant POST_NOTIFICATIONS trước để notification dialog không xuất hiện chặn file list
+        adb._run(["shell", "pm", "grant", pkg, "android.permission.POST_NOTIFICATIONS"])
         time.sleep(1)
 
         go_to_home(driver, cfg)
@@ -3558,7 +3703,7 @@ class TestWelcomeAndSelection:
         # Tìm file đầu tiên trong danh sách và mở
         items = find_all(driver, "vl_item_file_name", timeout=10)
         if not items:
-            pytest.skip("Không có file nào trong danh sách để mở")
+            pytest.fail("Không có file nào trong danh sách để mở")
 
         first_file_name = items[0].text or ""
         items[0].click()
@@ -3582,6 +3727,10 @@ class TestWelcomeAndSelection:
         TC-015: Mở file từ màn hình selection (file picker bên trong app)
         Expected: Reader mở thành công
         """
+        # Grant POST_NOTIFICATIONS trước khi vào app để notification dialog không chặn UI
+        pkg = cfg["app"]["package_name"]
+        adb._run(["shell", "pm", "grant", pkg, "android.permission.POST_NOTIFICATIONS"])
+
         go_to_home(driver, cfg)
 
         # Push file vào /sdcard/ (root) vì FolderActivity mở tại /sdcard/ trực tiếp
@@ -3605,7 +3754,7 @@ class TestWelcomeAndSelection:
                 continue
 
         if not selection_found:
-            pytest.skip("Không tìm thấy nút selection/browse trong app — cần xác định resource ID")
+            pytest.fail("Không tìm thấy nút selection/browse trong app — cần xác định resource ID")
 
         # Trong màn selection, tìm và click file
         try:
@@ -3617,7 +3766,7 @@ class TestWelcomeAndSelection:
             el.click()
             time.sleep(3)
         except Exception:
-            pytest.skip("Không tìm thấy file trong màn selection")
+            pytest.fail("Không tìm thấy file trong màn selection")
 
         if _is_ad_showing(driver):
             dismiss_ads(driver)

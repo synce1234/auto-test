@@ -170,7 +170,7 @@ else
 fi
 
 info "Kiểm tra UIAutomator2 driver..."
-if appium driver list --installed 2>/dev/null | grep -q "uiautomator2"; then
+if appium driver list 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -q "uiautomator2.*installed"; then
   ok "UIAutomator2 driver đã có"
 else
   info "Đang cài UIAutomator2 driver..."

@@ -361,11 +361,14 @@ def _has_ffmpeg() -> bool:
 
 class ChunkedScreenRecorder:
     """
-    Quay video theo từng chunk ≤175s bằng adb shell screenrecord,
+    Quay video theo từng chunk ≤170s bằng adb shell screenrecord,
     sau đó ghép thành 1 file duy nhất bằng ffmpeg.
     Fallback: giữ các file _partNN.mp4 riêng lẻ nếu không có ffmpeg.
+
+    Thread-safety: _lock bảo vệ _proc và _chunks được truy cập từ cả
+    main thread (stop) và background thread (_watch).
     """
-    CHUNK_SECS = 175
+    CHUNK_SECS = 170  # < 175 để tránh hit hard limit screenrecord (180s)
 
     def __init__(self, serial: str = ""):
         self._adb = ["adb", "-s", serial] if serial else ["adb"]
@@ -377,6 +380,7 @@ class ChunkedScreenRecorder:
         self._thread = None
         self._vdir = ""
         self._name = ""
+        self._lock = threading.Lock()  # bảo vệ _proc và _chunks
 
     def start(self, video_dir: str, name: str):
         self._vdir = video_dir
@@ -394,41 +398,52 @@ class ChunkedScreenRecorder:
 
     def _start_chunk(self):
         rp = self._rpath(self._idx)
-        self._chunks.append(rp)
-        self._proc = subprocess.Popen(
+        proc = subprocess.Popen(
             self._adb + ["shell", "screenrecord",
                          "--time-limit", str(self.CHUNK_SECS),
                          "--bit-rate", "4000000", rp],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        with self._lock:
+            self._chunks.append(rp)
+            self._proc = proc
         self._idx += 1
 
     def _watch(self):
         """Background thread: tự động start chunk mới khi chunk cũ hết thời gian."""
         while not self._stop_evt.is_set():
-            if self._proc and self._proc.poll() is not None and not self._stop_evt.is_set():
-                self._start_chunk()
+            try:
+                with self._lock:
+                    proc = self._proc
+                if proc and proc.poll() is not None and not self._stop_evt.is_set():
+                    self._start_chunk()
+            except Exception:
+                pass
             time.sleep(1)
 
     def stop(self) -> str | None:
         self._stop_evt.set()
-        # SIGINT khiến screenrecord lưu file và thoát gracefully
+        # SIGINT để screenrecord finalize file trước khi thoát
         subprocess.run(self._adb + ["shell", "pkill", "-2", "screenrecord"],
                        capture_output=True, timeout=5)
-        if self._proc and self._proc.poll() is None:
+        with self._lock:
+            proc = self._proc
+        if proc and proc.poll() is None:
             try:
-                self._proc.wait(timeout=8)
+                proc.wait(timeout=12)  # chờ adb shell exit sau khi screenrecord finalize
             except subprocess.TimeoutExpired:
-                self._proc.kill()
+                proc.kill()
         if self._thread:
             self._thread.join(timeout=5)
-        time.sleep(1)  # Cho device hoàn tất ghi file
+        time.sleep(3)  # device cần flush buffer và finalize MP4 header
 
         os.makedirs(self._vdir, exist_ok=True)
-        for i, rp in enumerate(self._chunks):
+        with self._lock:
+            chunks = list(self._chunks)  # snapshot tránh race với _watch
+        for i, rp in enumerate(chunks):
             lp = os.path.join(self._vdir, f"__chunk_{i:03d}.mp4")
             r = subprocess.run(self._adb + ["pull", rp, lp],
-                               capture_output=True, timeout=30)
+                               capture_output=True, timeout=60)  # tăng timeout cho file lớn
             if r.returncode == 0 and os.path.exists(lp) and os.path.getsize(lp) > 0:
                 self._local.append(lp)
             subprocess.run(self._adb + ["shell", "rm", "-f", rp],

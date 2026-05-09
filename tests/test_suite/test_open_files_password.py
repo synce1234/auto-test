@@ -202,6 +202,12 @@ def wait_for_password_dialog(driver, adb=None, timeout=15) -> bool:  # noqa: ARG
 
     _serial = os.environ.get("TEST_DEVICE_SERIAL", "")
     _adb_pw = ["adb", "-s", _serial] if _serial else ["adb"]
+    
+    try:
+        RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
+        time.sleep(1)
+    except Exception:
+        pass
 
     def _focused_window() -> str:
         """Lấy mCurrentFocus qua dumpsys activity activities (không dùng pipe)."""
@@ -445,44 +451,47 @@ def click_cancel_button(driver, adb=None):
 def enter_password(driver, password: str, adb=None):
     """
     Nhập password vào EditText.
-    Nếu có adb: dùng ADB dump tìm edtPassWord → tap → input text (tránh UIA2 crash).
+    Ưu tiên driver (Appium), fallback sang ADB nếu driver thất bại.
     """
-    if adb is not None:
-        import xml.etree.ElementTree as _ET_ep
-        import re as _re_ep
-        _rid = f"{PKG}:id/edtPassWord"
-        try:
-            adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_ep.xml"])
-            _, _xml, _ = adb._run(["shell", "cat", "/sdcard/uidump_ep.xml"])
-            if _xml and "<hierarchy" in _xml:
-                _root = _ET_ep.fromstring(_xml)
-                for _n in _root.iter("node"):
-                    if _n.get("resource-id", "") == _rid or _n.get("class", "") == "android.widget.EditText":
-                        _nums = _re_ep.findall(r"\d+", _n.get("bounds", ""))
-                        if len(_nums) >= 4:
-                            _cx = (int(_nums[0]) + int(_nums[2])) // 2
-                            _cy = (int(_nums[1]) + int(_nums[3])) // 2
-                            adb._run(["shell", "input", "tap", str(_cx), str(_cy)])
-                            time.sleep(0.5)
-                            # Xóa text cũ bằng select all + delete
-                            adb._run(["shell", "input", "keyevent", "KEYCODE_CTRL_A"])
-                            adb._run(["shell", "input", "keyevent", "KEYCODE_DEL"])
-                            time.sleep(0.3)
-                            # Nhập password (chỉ dùng cho password không có ký tự đặc biệt)
-                            adb._run(["shell", "input", "text", password])
-                            time.sleep(0.5)
-                            return True
-        except Exception:
-            pass
-        return False
+    # ── Driver primary ────────────────────────────────────────────────────────
+    try:
+        pwd_input = find_password_input(driver)
+        if pwd_input is not None:
+            pwd_input.clear()
+            pwd_input.send_keys(password)
+            time.sleep(0.5)
+            return True
+    except Exception:
+        pass
 
-    pwd_input = find_password_input(driver)
-    if pwd_input is None:
+    # ── ADB fallback ──────────────────────────────────────────────────────────
+    if adb is None:
         return False
-    pwd_input.clear()
-    pwd_input.send_keys(password)
-    time.sleep(1)
-    return True
+    import xml.etree.ElementTree as _ET_ep
+    import re as _re_ep
+    _rid = f"{PKG}:id/edtPassWord"
+    try:
+        adb._run(["shell", "uiautomator", "dump", "/sdcard/uidump_ep.xml"])
+        _, _xml, _ = adb._run(["shell", "cat", "/sdcard/uidump_ep.xml"])
+        if _xml and "<hierarchy" in _xml:
+            _root = _ET_ep.fromstring(_xml)
+            for _n in _root.iter("node"):
+                if _n.get("resource-id", "") == _rid or _n.get("class", "") == "android.widget.EditText":
+                    _nums = _re_ep.findall(r"\d+", _n.get("bounds", ""))
+                    if len(_nums) >= 4:
+                        _cx = (int(_nums[0]) + int(_nums[2])) // 2
+                        _cy = (int(_nums[1]) + int(_nums[3])) // 2
+                        adb._run(["shell", "input", "tap", str(_cx), str(_cy)])
+                        time.sleep(0.5)
+                        adb._run(["shell", "input", "keyevent", "KEYCODE_CTRL_A"])
+                        adb._run(["shell", "input", "keyevent", "KEYCODE_DEL"])
+                        time.sleep(0.3)
+                        adb._run(["shell", "input", "text", password])
+                        time.sleep(0.5)
+                        return True
+    except Exception:
+        pass
+    return False
 
 
 def _handle_app_chooser(adb, driver, pkg: str):
@@ -1277,15 +1286,20 @@ class TestRememberPassword:
         opened_again = open_password_pdf_from_home(driver, adb, cfg)
         assert opened_again, "Không tìm thấy file trong danh sách khi mở lại"
 
-        if _is_ad_showing(driver):
-            dismiss_ads(driver)
-            time.sleep(1)
+        # Dismiss ads bằng RobustDriver — retry loop 15s để chờ skip button của video ad
+        _rd = RobustDriver(driver).configure_recovery(adb=adb)
+        _ad_deadline = time.time() + 15
+        while time.time() < _ad_deadline:
+            if not _rd.is_ad_visible():
+                break
+            _rd.dismiss_ad()
+            time.sleep(1.5)
 
-        time.sleep(3)
+        time.sleep(2)
 
         # Expected: file mở thẳng, KHÔNG hỏi password
         dialog_showing = is_password_dialog_still_showing(driver)
-        file_opened = is_file_opened(driver, timeout=8)
+        file_opened = is_file_opened(driver, timeout=15)
 
         assert not dialog_showing, \
             "Dialog nhập password xuất hiện dù đã Remember — Remember không hoạt động!"
@@ -1334,29 +1348,9 @@ class TestOpenFilesPassword:
         opened = open_password_pdf_from_home(driver, adb, cfg)
         assert opened, "Không tìm thấy file có password trong danh sách"
 
-        # Sau khi tap file, AppOpenAd có thể trigger và crash UIA2.
-        # Dùng ADB để dismiss ad trước, rồi recover UIA2 trước khi dùng Appium.
-        import subprocess as _sp_tc021, re as _re_tc021, os as _os_tc021
-        _serial = _os_tc021.environ.get("TEST_DEVICE_SERIAL", "")
-        _adb_tc021 = ["adb", "-s", _serial] if _serial else ["adb"]
+        # Sau khi tap file, AppOpenAd có thể trigger → dismiss bằng RobustDriver
         try:
-            _r = _sp_tc021.run(_adb_tc021 + ["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"],
-                               capture_output=True, text=True, timeout=5)
-            if "gms.ads.AdActivity" in (_r.stdout or ""):
-                _rs = _sp_tc021.run(_adb_tc021 + ["shell", "wm", "size"],
-                                    capture_output=True, text=True, timeout=4)
-                _mm = _re_tc021.search(r"(\d+)x(\d+)", _rs.stdout or "")
-                _w, _h = (int(_mm.group(1)), int(_mm.group(2))) if _mm else (1080, 2400)
-                for _tx, _ty in [(int(_w * 0.89), int(_h * 0.045)),
-                                  (int(_w * 0.96), int(_h * 0.106))]:
-                    _sp_tc021.run(_adb_tc021 + ["shell", "input", "tap", str(_tx), str(_ty)],
-                                  capture_output=True)
-                    time.sleep(2)
-                    _r2 = _sp_tc021.run(_adb_tc021 + ["shell", "dumpsys", "window", "|", "grep", "mCurrentFocus"],
-                                        capture_output=True, text=True, timeout=5)
-                    if "gms.ads.AdActivity" not in (_r2.stdout or ""):
-                        break
-                wait_uia2_ready(driver, timeout=30)
+            RobustDriver(driver).configure_recovery(adb=adb).dismiss_ad_if_any()
         except Exception:
             pass
 

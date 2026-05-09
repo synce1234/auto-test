@@ -86,6 +86,13 @@ class ADBController:
 
         code, out, err = self._run(cmd, timeout=120)
         success = code == 0 and "Success" in out
+
+        if not success and "INSTALL_FAILED_INSUFFICIENT_STORAGE" in (err or out):
+            print("  [WARN] Không đủ bộ nhớ, đang dọn cache và thử lại...")
+            self._run(["shell", "pm", "trim-caches", "512M"], timeout=30)
+            code, out, err = self._run(cmd, timeout=120)
+            success = code == 0 and "Success" in out
+
         if success:
             print(f"  [OK] Cài thành công: {os.path.basename(apk_path)}")
         else:
